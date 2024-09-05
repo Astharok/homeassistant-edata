@@ -56,33 +56,53 @@ def OPTIONS_STEP_COSTS(
             default=prev_options.get(
                 const.PRICE_P1_KW_YEAR, const.DEFAULT_PRICE_P1_KW_YEAR
             ),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
         vol.Required(
             const.PRICE_P2_KW_YEAR,
             default=prev_options.get(
                 const.PRICE_P2_KW_YEAR, const.DEFAULT_PRICE_P2_KW_YEAR
             ),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
         vol.Required(
             const.PRICE_METER_MONTH,
             default=prev_options.get(
                 const.PRICE_METER_MONTH, const.DEFAULT_PRICE_METER_MONTH
             ),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
         vol.Required(
             const.PRICE_ELECTRICITY_TAX,
             default=prev_options.get(
                 const.PRICE_ELECTRICITY_TAX,
                 const.DEFAULT_PRICE_ELECTRICITY_TAX,
             ),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
         vol.Required(
             const.PRICE_IVA_TAX,
             default=prev_options.get(
                 const.PRICE_IVA_TAX,
                 const.DEFAULT_PRICE_IVA,
             ),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
     }
 
     pvpc_schema = {
@@ -92,22 +112,38 @@ def OPTIONS_STEP_COSTS(
                 const.PRICE_MARKET_KW_YEAR,
                 const.DEFAULT_PRICE_MARKET_KW_YEAR,
             ),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
     }
 
     nonpvpc_schema = {
         vol.Required(
             const.PRICE_P1_KWH,
             default=prev_options.get(const.PRICE_P1_KWH, vol.UNDEFINED),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
         vol.Required(
             const.PRICE_P2_KWH,
             default=prev_options.get(const.PRICE_P2_KWH, vol.UNDEFINED),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
         vol.Required(
             const.PRICE_P3_KWH,
             default=prev_options.get(const.PRICE_P3_KWH, vol.UNDEFINED),
-        ): vol.Coerce(float),
+        ): sel.NumberSelector(
+            config=sel.NumberSelectorConfig(
+                min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+            )
+        ),
     }
 
     schema = base_schema

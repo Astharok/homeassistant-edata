@@ -175,6 +175,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
             errors["base"] = "invalid_credentials"
         except NoSuppliesFound:
             errors["base"] = "no_supplies_found"
+        except Exception as e:
+            _LOGGER.exception(e)
         else:
             self.inputs.update(user_input)
             return await self.async_step_choosecups()
@@ -200,6 +202,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
                     ),
                     errors={"base": "already_configured"},
                 )
+            except Exception as e:
+                _LOGGER.exception(e)
 
             return self.async_create_entry(
                 title=self.inputs[const.CONF_SCUPS],
@@ -238,7 +242,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     data=user_input,
                 )
             self.inputs = user_input
-            return await self.async_step_costs()
+            try:
+                return await self.async_step_costs()
+            except Exception as e:
+                _LOGGER.exception(e)
 
         return self.async_show_form(
             step_id="init",
@@ -255,7 +262,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 )
             for key in user_input:
                 self.inputs[key] = user_input[key]
-            return await self.async_step_formulas()
+
+            try:
+                return await self.async_step_formulas()
+            except Exception as e:
+                _LOGGER.exception(e)
 
         return self.async_show_form(
             step_id="costs",
@@ -283,7 +294,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             self.sim = await simulate_last_month_billing(
                 self.hass, self.config_entry, self.inputs
             )
-            return await self.async_step_confirm()
+            try:
+                return await self.async_step_confirm()
+            except Exception as e:
+                _LOGGER.exception(e)
 
         return self.async_show_form(
             step_id="formulas",
@@ -300,8 +314,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None and user_input["confirm"]:
             self.inputs["update_billing_since"] = user_input["apply_from"]
             return self.async_create_entry(title="", data=self.inputs)
-
-        return self.async_show_form(
-            step_id="confirm",
-            data_schema=vol.Schema(sch.OPTIONS_STEP_CONFIRM(self.sim)),
-        )
+        try:
+            return self.async_show_form(
+                step_id="confirm",
+                data_schema=vol.Schema(sch.OPTIONS_STEP_CONFIRM(self.sim)),
+            )
+        except Exception as e:
+            _LOGGER.exception(e)
