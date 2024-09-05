@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EVENT_HOMEASSISTANT_START
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import dt as dt_util
 
 from . import const, utils
 from .coordinator import EdataCoordinator
@@ -49,6 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if entry.options.get(const.CONF_DEBUG, False):
         logging.getLogger("edata").setLevel(logging.INFO)
+        # _LOGGER.setLevel(logging.DEBUG)
     else:
         logging.getLogger("edata").setLevel(logging.WARNING)
 
@@ -98,7 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     @callback
     async def async_first_refresh(*args):
         """Force the component to assess the first refresh."""
-        await coordinator.async_refresh()
+        hass.async_create_task(coordinator.async_refresh())
 
     if hass.state == CoreState.running:
         await async_first_refresh()
@@ -109,9 +111,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # register websockets
     async_register_websockets(hass)
-
-    # Set options callback
-    entry.async_on_unload(entry.add_update_listener(coordinator.options_changed))
 
     return True
 
@@ -135,4 +134,12 @@ async def async_remove_entry(hass: HomeAssistant, entry) -> None:
 async def options_update_listener(hass: HomeAssistant, entry: ConfigEntry):
     """Handle options update."""
 
-    await hass.config_entries.async_reload(entry.entry_id)
+    scups = entry.data[const.CONF_SCUPS]
+    _LOGGER.debug("%s: options changed", scups)
+    data = hass.data[const.DOMAIN][scups.lower()]
+    coor: EdataCoordinator = data["coordinator"]
+
+    await coor.update_billing(
+        entry.options,
+        dt_util.as_local(dt_util.parse_datetime(entry.options["update_billing_since"])),
+    )

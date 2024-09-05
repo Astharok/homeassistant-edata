@@ -109,10 +109,8 @@ STAT_ID_P2_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_p2_energy_cost"
 STAT_ID_P3_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_p3_energy_cost"
 STAT_ID_POWER_EUR = lambda scups: f"{DOMAIN}:{scups}_power_cost"
 
-
-WARN_INCONSISTENT_STORAGE = "Inconsistent stored data for %s, attempting to autofix it by wiping and rebuilding stats"
-WARN_STATISTICS_CLEAR = "Clearing statistics for %s"
-WARN_MISSING_STATS = "Statistic '%s' is missing"
-
 # cups integrity
 CUPS_CONTROL_DIGITS = "TRWAGMYFPDXBNJZSQVHLCKE"
+
+CACHE_MONTHS_SHORT = 13
+CACHE_MONTHS_LONG = 23

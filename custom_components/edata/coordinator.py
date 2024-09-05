@@ -59,7 +59,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         """Initialize the data handler.."""
 
         # Number of cached months (starting from 1st day of the month will be automatic)
-        self.cache_months = 12
+        self.cache_months = const.CACHE_MONTHS_SHORT
 
         # Store properties
         self.hass = hass
@@ -192,7 +192,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             cls, hass, username, password, cups, scups, authorized_nif, billing
         )
 
-    async def _async_update_data(self):
+    async def _async_update_data(self, update_statistics=True):
         """Update data via API."""
 
         # fetch last 365 days
@@ -204,7 +204,8 @@ class EdataCoordinator(DataUpdateCoordinator):
             - timedelta(minutes=1),  # to: yesterday midnight
         )
 
-        await self.update_statistics()
+        if update_statistics:
+            await self.update_statistics()
 
         self._load_data()
 
@@ -313,7 +314,7 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         # give from_dt a proper default value
         from_dt = dt_util.as_utc(
-            self._edata.data["consumptions_monthly_sum"][0]["datetime"]
+            self._edata.data["consumptions_daily_sum"][0]["datetime"]
         )
 
         _LOGGER.debug(
@@ -344,7 +345,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             from_dt,
             dt_util.as_utc(datetime.now()),
             set(to_check),
-            "month",
+            "hour",
             None,
             {"change", "state"},
         )
@@ -354,7 +355,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         _consumptions_tariff_checksum = [0, 0, 0]
         _surplus_checksum = 0
 
-        for c in self._edata.data["consumptions_monthly_sum"]:
+        for c in self._edata.data["consumptions_daily_sum"]:
             _consumptions_checksum += c["value_kWh"]
             _consumptions_tariff_checksum[0] += c["value_p1_kWh"]
             _consumptions_tariff_checksum[1] += c["value_p2_kWh"]
@@ -383,8 +384,12 @@ class EdataCoordinator(DataUpdateCoordinator):
                             self.scups,
                             test_tuple[1],
                         )
+            else:
+                _LOGGER.warning(
+                    "%s: '%s' statistic not found", self.scups, test_tuple[1]
+                )
 
-            if not math.isclose(test_tuple[0], _stats_sum, abs_tol=0.1):
+            if not math.isclose(test_tuple[0], _stats_sum, abs_tol=1):  # +-1kWh
                 _LOGGER.warning(
                     "%s: '%s' statistic is corrupt, its checksum is %s, got %s",
                     self.scups,
@@ -399,8 +404,12 @@ class EdataCoordinator(DataUpdateCoordinator):
         )
         return len(self._corrupt_stats) == 0
 
-    async def rebuild_recent_statistics(self, from_dt: datetime | None = None):
+    async def rebuild_statistics(
+        self, from_dt: datetime | None = None, include_only: list[str] | None = None
+    ):
         """Rebuild edata statistics since a given datetime. Defaults to last year."""
+
+        _LOGGER.debug("%s: rebuilding statistics", self.scups)
 
         # recalculate all data
         await self.hass.async_add_executor_job(self._edata.process_data, False)
@@ -427,6 +436,9 @@ class EdataCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("%s: there are no corrupt statistics")
             return
 
+        if include_only is not None:
+            to_clear = [x for x in include_only if x in to_clear]
+
         # retrieve stored statistics along with its metadata
         old_metadata = await get_db_instance(self.hass).async_add_executor_job(
             get_metadata, self.hass
@@ -445,17 +457,21 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         # wipe all-time statistics (since it is the only method provided by home assistant)
         _LOGGER.warning(
-            const.WARN_STATISTICS_CLEAR,
+            "Clearing statistics for %s",
             to_clear,
         )
         get_db_instance(self.hass).async_clear_statistics(to_clear)
 
         # now restore old statistics
         for stat_id in old_data:
+            if stat_id not in to_clear:
+                continue
+
             self._last_stats_dt[stat_id] = dt_util.utc_from_timestamp(
                 old_data[stat_id][-1]["start"]
             )
             self._last_stats_sum[stat_id] = old_data[stat_id][-1]["sum"]
+
             _LOGGER.warning("Restoring statistic id '%s'", stat_id)
             get_db_instance(self.hass).async_import_statistics(
                 old_metadata[stat_id][1],
@@ -482,12 +498,18 @@ class EdataCoordinator(DataUpdateCoordinator):
     async def update_statistics(self):
         """Update Long Term Statistics with newly found data."""
 
-        _LOGGER.debug("%s: updating recent statistics", self.scups)
+        _LOGGER.debug("%s: synchronizing statistics", self.scups)
 
         # first fetch from db last statistics for current id
         await self._update_last_stats_summary()
 
-        _LOGGER.debug("%s: last statistics are %s", self.scups, self._last_stats_dt)
+        for stat_id in self._last_stats_dt:
+            _LOGGER.debug(
+                "%s: '%s' most recent data is at %s",
+                self.scups,
+                stat_id,
+                self._last_stats_dt[stat_id],
+            )
 
         await self._update_consumption_stats()
         await self._update_maximeter_stats()
@@ -500,12 +522,15 @@ class EdataCoordinator(DataUpdateCoordinator):
         """Add new statistics as a bundle."""
 
         for stat_id in new_stats:
-            _LOGGER.debug(
-                "%s: inserting %s new values for statistic '%s'",
-                self.scups,
-                len(new_stats[stat_id]),
-                stat_id,
-            )
+            if len(new_stats[stat_id]) > 0:
+                _LOGGER.debug(
+                    "%s: inserting %s new values for statistic '%s'",
+                    self.scups,
+                    len(new_stats[stat_id]),
+                    stat_id,
+                )
+            else:
+                continue
 
             if stat_id in self.energy_stat_ids:
                 metadata = StatisticMetaData(
@@ -541,8 +566,6 @@ class EdataCoordinator(DataUpdateCoordinator):
     async def _update_consumption_stats(self) -> dict[str, list[StatisticData]]:
         """Build long-term statistics for consumptions."""
 
-        _LOGGER.debug("%s: building new consumption statistics", self.scups)
-
         new_stats = {x: [] for x in self.energy_stat_ids}
 
         # init as 0 if need
@@ -551,7 +574,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                 self._last_stats_sum[stat_id] = 0
 
         _label = "value_kWh"
-        for data in self._edata.data.get("consumptions", {}):
+        for data in self._edata.data.get("consumptions", []):
             dt_found = dt_util.as_local(data["datetime"])
             _p = utils.get_pvpc_tariff(data["datetime"])
             by_tariff_ids = [
@@ -582,8 +605,6 @@ class EdataCoordinator(DataUpdateCoordinator):
     async def _update_cost_stats(self) -> dict[str, list[StatisticData]]:
         """Build long-term statistics for cost."""
 
-        _LOGGER.debug("%s: building new costs statistics", self.scups)
-
         new_stats = {x: [] for x in self.cost_stat_ids}
 
         # init as 0 if need
@@ -591,7 +612,12 @@ class EdataCoordinator(DataUpdateCoordinator):
             if stat_id not in self._last_stats_sum:
                 self._last_stats_sum[stat_id] = 0
 
-        for data in self._edata.data.get("cost_hourly_sum", {}):
+        _costs_data = self._edata.data.get("cost_hourly_sum", [])
+        if len(_costs_data) == 0:
+            # return empty stats since billing is apparently not enabled
+            return
+
+        for data in _costs_data:
             dt_found = dt_util.as_local(data["datetime"])
             tariff = utils.get_pvpc_tariff(data["datetime"])
 
@@ -665,8 +691,6 @@ class EdataCoordinator(DataUpdateCoordinator):
     async def _update_maximeter_stats(self) -> dict[str, list[StatisticData]]:
         """Build long-term statistics for maximeter."""
 
-        _LOGGER.debug("%s: building new maximeter statistics", self.scups)
-
         _label = "value_kW"
         new_stats = {x: [] for x in self.maximeter_stat_ids}
 
@@ -702,15 +726,6 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         await self._add_statistics(new_stats)
 
-    async def options_changed(self, hass: HomeAssistant, config_entry: ConfigEntry):
-        """Apply updates on options change."""
-
-        if config_entry.options.get("update_billing_since", None) is not None:
-            dt_from = dt_util.parse_datetime(
-                config_entry.options["update_billing_since"]
-            )
-            await self.rebuild_recent_statistics(dt_from)
-
     def soft_wipe(self):
         """Apply a soft wipe."""
 
@@ -735,29 +750,94 @@ class EdataCoordinator(DataUpdateCoordinator):
         """Apply an async full reset."""
 
         await self.hass.async_add_executor_job(self.soft_wipe)
-        await self._async_update_data()
+        await self._async_update_data(update_statistics=False)
         if not await self.check_statistics_integrity():
-            await self.rebuild_recent_statistics()
+            await self.rebuild_statistics()
         else:
             _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
 
     async def async_full_import(self):
         """Apply an async full fetch."""
 
-        og_cache_months = self.cache_months
-
         _LOGGER.warning("Importing last two years of data from Datadis")
-        self.cache_months = 23
-        await self._async_update_data()
-
+        self.set_long_cache()
+        await self._async_update_data(update_statistics=False)
+        self._edata.process_data()
         # check if consumptions statistics are wrong
         if not await self.check_statistics_integrity():
-            await self.rebuild_recent_statistics()
+            await self.rebuild_statistics()
         else:
             _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
 
+        self.set_short_cache()
         _LOGGER.debug(
-            "%s: reducing cache items to last %s months", self.scups, og_cache_months
+            "%s: reducing cache items to last %s months", self.scups, self.cache_months
         )
-        self.cache_months = og_cache_months
-        await self._async_update_data()
+        await self._async_update_data(update_statistics=False)
+
+    def set_long_cache(self):
+        """Set the number of cached monts to a long value (two years)."""
+
+        self.cache_months = const.CACHE_MONTHS_LONG
+
+    def set_short_cache(self):
+        """Set the number of cached monts to a short value (a year)."""
+
+        self.cache_months = const.CACHE_MONTHS_SHORT
+
+    async def update_billing(self, options: dict, since: datetime | None = None):
+        """Update billing rules and recalculate."""
+
+        _LOGGER.info("%s: updating costs since %s", self.scups, since.isoformat())
+        billing_enabled = options.get(const.CONF_BILLING, False)
+
+        if billing_enabled:
+            pricing_rules = {
+                const.PRICE_ELECTRICITY_TAX: const.DEFAULT_PRICE_ELECTRICITY_TAX,
+                const.PRICE_IVA_TAX: const.DEFAULT_PRICE_IVA,
+            }
+            pricing_rules.update(
+                {
+                    x: options[x]
+                    for x in options
+                    if x
+                    in (
+                        const.CONF_CYCLE_START_DAY,
+                        const.PRICE_P1_KW_YEAR,
+                        const.PRICE_P2_KW_YEAR,
+                        const.PRICE_P1_KWH,
+                        const.PRICE_P2_KWH,
+                        const.PRICE_P3_KWH,
+                        const.PRICE_METER_MONTH,
+                        const.PRICE_MARKET_KW_YEAR,
+                        const.PRICE_ELECTRICITY_TAX,
+                        const.PRICE_IVA_TAX,
+                        const.BILLING_ENERGY_FORMULA,
+                        const.BILLING_POWER_FORMULA,
+                        const.BILLING_OTHERS_FORMULA,
+                        const.BILLING_SURPLUS_FORMULA,
+                    )
+                }
+            )
+        else:
+            pricing_rules = None
+
+        self._edata.pricing_rules = pricing_rules
+        self._edata.is_pvpc = options[const.CONF_PVPC]
+        self._edata.enable_billing = options[const.CONF_BILLING]
+
+        for key in self._edata.data:
+            if not key.startswith("cost"):
+                continue
+            if since is not None:
+                self._edata.data[key] = [
+                    x
+                    for x in self._edata.data[key]
+                    if dt_util.as_local(x["datetime"]) < since
+                ]
+            else:
+                self._edata.data[key] = []
+
+        self._edata.process_cost()
+
+        await self.rebuild_statistics(since, self.cost_stat_ids)
