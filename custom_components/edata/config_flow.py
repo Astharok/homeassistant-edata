@@ -225,9 +225,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Provide options for edata."""
 
-    def __init__(self, config_entry) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        super().__init__(*args, **kwargs)
         self.inputs = {}
         self.sim = {}
 
