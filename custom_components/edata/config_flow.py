@@ -219,15 +219,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
     @callback
     def async_get_options_flow(config_entry) -> OptionsFlowHandler:
         """Return the options flow handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Provide options for edata."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self) -> None:
         """Initialize options flow."""
-        super().__init__(*args, **kwargs)
+        super().__init__()
         self.inputs = {}
         self.sim = {}
 
