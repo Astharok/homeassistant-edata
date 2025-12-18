@@ -39,18 +39,18 @@ class InvalidCups(HomeAssistantError):
     """Error to indicate cups is invalid."""
 
 
-def test_login(username, password, authorized_nif=None):
-    """Test login synchronously."""
+async def test_login(username, password, authorized_nif=None):
+    """Test login asynchronously."""
 
     api = DatadisConnector(username, password)
 
     api._recent_queries = {}  # noqa: SLF001
     api._recent_cache = {}  # noqa: SLF001
 
-    if api.login() is False:
+    if await api._async_get_token() is False:
         return None
 
-    return api.get_supplies(authorized_nif=authorized_nif)
+    return await api.async_get_supplies(authorized_nif=authorized_nif)
 
 
 def get_scups(hass: HomeAssistant, cups: str) -> str:
@@ -78,8 +78,7 @@ async def validate_step_user(
         )
         data[const.CONF_AUTHORIZEDNIF] = None
 
-    result = await hass.async_add_executor_job(
-        test_login,
+    result = await test_login(
         data[CONF_USERNAME],
         data[CONF_PASSWORD],
         data.get(const.CONF_AUTHORIZEDNIF, None),
@@ -220,15 +219,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
     @callback
     def async_get_options_flow(config_entry) -> OptionsFlowHandler:
         """Return the options flow handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Provide options for edata."""
 
-    def __init__(self, config_entry) -> None:
+    def __init__(self) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        super().__init__()
         self.inputs = {}
         self.sim = {}
 

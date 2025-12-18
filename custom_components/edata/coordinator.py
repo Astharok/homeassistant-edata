@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from datetime import datetime, timedelta
 import logging
@@ -95,7 +96,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             }
         )
 
-        self._load_data(preprocess=True)
+        # self._load_data(preprocess=True)
 
         # Used statistic IDs (edata:<id>_metric_to_track)
         self.statistic_ids = {
@@ -198,8 +199,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         """Update data via API."""
 
         # fetch last 365 days
-        await self.hass.async_add_executor_job(
-            self._edata.update,
+        await self._edata.async_update(
             datetime.today().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             - relativedelta(months=self.cache_months),  # since N cache_months
             datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -209,16 +209,16 @@ class EdataCoordinator(DataUpdateCoordinator):
         if update_statistics:
             await self.update_statistics()
 
-        self._load_data()
+        await self._load_data()
 
         return self._data
 
-    def _load_data(self, preprocess=False):
+    async def _load_data(self, preprocess=False):
         """Load data found in built-in statistics into state, attributes and websockets."""
 
         try:
             if preprocess:
-                self._edata.process_data()
+                await asyncio.to_thread(self._edata.process_data)
 
             # reference to attributes shared storage
             attrs = self._data[const.DATA_ATTRIBUTES]
@@ -312,7 +312,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._corrupt_stats = []
 
         # recalculate all data
-        await self.hass.async_add_executor_job(self._edata.process_data, False)
+        await asyncio.to_thread(self._edata.process_data, False)
 
         # give from_dt a proper default value
         from_dt = dt_util.as_utc(
@@ -414,7 +414,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("%s: rebuilding statistics", self.scups)
 
         # recalculate all data
-        await self.hass.async_add_executor_job(self._edata.process_data, False)
+        await asyncio.to_thread(self._edata.process_data, False)
 
         # get all statistic_ids starting with edata:<id/scups>
         all_ids = await get_db_instance(self.hass).async_add_executor_job(
@@ -435,7 +435,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             to_clear = [x for x in to_clear if x in self._corrupt_stats]
 
         if len(to_clear) == 0:
-            _LOGGER.warning("%s: there are no corrupt statistics")
+            _LOGGER.warning("%s: there are no corrupt statistics", to_clear)
             return
 
         if include_only is not None:
@@ -773,8 +773,9 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         _LOGGER.warning("Importing last two years of data from Datadis")
         self.set_long_cache()
-        await self._async_update_data(update_statistics=True)
-        self._edata.process_data()
+        await self._async_update_data(update_statistics=False)
+        await asyncio.to_thread(self._edata.process_data)
+
         # check if consumptions statistics are wrong
         if not await self.check_statistics_integrity():
             await self.rebuild_statistics()
@@ -851,6 +852,6 @@ class EdataCoordinator(DataUpdateCoordinator):
             else:
                 self._edata.data[key] = []
 
-        self._edata.process_cost()
+        await asyncio.to_thread(self._edata.process_cost)
 
         await self.rebuild_statistics(since, self.cost_stat_ids)
