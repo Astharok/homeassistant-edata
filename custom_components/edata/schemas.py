@@ -42,11 +42,15 @@ def OPTIONS_STEP_INIT(prev_options: dict[str, typing.Any]) -> dict[str, typing.A
             const.CONF_PVPC,
             default=prev_options.get(const.CONF_PVPC, False),
         ): bool,
+        vol.Required(    # <-- Añadido aquí
+            const.CONF_SURPLUS,
+            default=prev_options.get(const.CONF_SURPLUS, False),
+        ): bool,
     }
 
 
 def OPTIONS_STEP_COSTS(
-    is_pvpc: bool, prev_options: dict[str, typing.Any]
+    is_pvpc: bool, is_surplus: bool, prev_options: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
     """Build the options costs step dict schema."""
 
@@ -122,7 +126,7 @@ def OPTIONS_STEP_COSTS(
     nonpvpc_schema = {
         vol.Required(
             const.PRICE_P1_KWH,
-            default=prev_options.get(const.PRICE_P1_KWH, vol.UNDEFINED),
+            default=prev_options.get(const.PRICE_P1_KWH, const.DEFAULT_PRICE_P1_KWH),
         ): sel.NumberSelector(
             config=sel.NumberSelectorConfig(
                 min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
@@ -130,7 +134,7 @@ def OPTIONS_STEP_COSTS(
         ),
         vol.Required(
             const.PRICE_P2_KWH,
-            default=prev_options.get(const.PRICE_P2_KWH, vol.UNDEFINED),
+            default=prev_options.get(const.PRICE_P2_KWH, const.DEFAULT_PRICE_P2_KWH),
         ): sel.NumberSelector(
             config=sel.NumberSelectorConfig(
                 min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
@@ -138,7 +142,7 @@ def OPTIONS_STEP_COSTS(
         ),
         vol.Required(
             const.PRICE_P3_KWH,
-            default=prev_options.get(const.PRICE_P3_KWH, vol.UNDEFINED),
+            default=prev_options.get(const.PRICE_P3_KWH, const.DEFAULT_PRICE_P3_KWH),
         ): sel.NumberSelector(
             config=sel.NumberSelectorConfig(
                 min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
@@ -151,6 +155,18 @@ def OPTIONS_STEP_COSTS(
         schema.update(pvpc_schema)
     else:
         schema.update(nonpvpc_schema)
+        
+    if is_surplus:
+        schema.update({
+            vol.Required(
+                const.PRICE_SURP_P1_KWH,
+                default=prev_options.get(const.PRICE_SURP_P1_KWH, const.DEFAULT_PRICE_SURPLUS_KWH),
+            ): sel.NumberSelector(
+                config=sel.NumberSelectorConfig(
+                    min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+                )
+            ),
+        })
 
     return schema
 
@@ -184,6 +200,10 @@ def OPTIONS_STEP_FORMULAS(
                 const.BILLING_OTHERS_FORMULA,
                 default=tokenize(def_formulas[const.BILLING_OTHERS_FORMULA]),
             ): sel.TemplateSelector(),
+            vol.Required(  # <-- AÑADIDO: fórmula de vertido
+                const.BILLING_SURPLUS_FORMULA,
+                default=tokenize(def_formulas.get(const.BILLING_SURPLUS_FORMULA)),
+            ): sel.TemplateSelector(),
         }
 
     return {
@@ -213,6 +233,15 @@ def OPTIONS_STEP_FORMULAS(
                     def_formulas[const.BILLING_OTHERS_FORMULA],
                 )
             ),
+        ): sel.TemplateSelector(),
+        vol.Required(
+            const.BILLING_SURPLUS_FORMULA,
+            default=tokenize(
+                prev_options.get(
+                    const.BILLING_SURPLUS_FORMULA,
+                    def_formulas[const.BILLING_SURPLUS_FORMULA],
+                )
+            )
         ): sel.TemplateSelector(),
     }
 

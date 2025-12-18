@@ -44,10 +44,11 @@ DEFAULT_PRICE_P2_KW_YEAR = 1.4243591
 DEFAULT_PRICE_P1_KWH = None
 DEFAULT_PRICE_P2_KWH = None
 DEFAULT_PRICE_P3_KWH = None
+DEFAULT_PRICE_SURPLUS_KWH = None
 DEFAULT_PRICE_METER_MONTH = 0.81
 DEFAULT_PRICE_MARKET_KW_YEAR = 3.113
 DEFAULT_PRICE_ELECTRICITY_TAX = 1.05
-DEFAULT_PRICE_IVA = 1.10
+DEFAULT_PRICE_IVA = 1.21
 
 BILLING_ENERGY_FORMULA = "energy_formula"
 BILLING_POWER_FORMULA = "power_formula"
@@ -58,14 +59,14 @@ DEFAULT_CUSTOM_BILLING_FORMULAS = {
     BILLING_ENERGY_FORMULA: "electricity_tax * iva_tax * kwh_eur * kwh",
     BILLING_POWER_FORMULA: "electricity_tax * iva_tax * (p1_kw * p1_kw_year_eur + p2_kw * p2_kw_year_eur) / 365 / 24",
     BILLING_OTHERS_FORMULA: "iva_tax * meter_month_eur / 30 / 24",
-    BILLING_SURPLUS_FORMULA: "electricity_tax * iva_tax * surplus_kwh * surplus_kwh_eur",
+    BILLING_SURPLUS_FORMULA: "electricity_tax * iva_tax * surplus_kwh * surplus_p1_kwh_eur",
 }
 
 DEFAULT_PVPC_BILLING_FORMULAS = {
     BILLING_ENERGY_FORMULA: "electricity_tax * iva_tax * kwh_eur * kwh",
     BILLING_POWER_FORMULA: "electricity_tax * iva_tax * (p1_kw * (p1_kw_year_eur + market_kw_year_eur) + p2_kw * p2_kw_year_eur) / 365 / 24",
     BILLING_OTHERS_FORMULA: "iva_tax * meter_month_eur / 30 / 24",
-    BILLING_SURPLUS_FORMULA: "electricity_tax * iva_tax * surplus_kwh * surplus_kwh_eur",
+    BILLING_SURPLUS_FORMULA: "electricity_tax * iva_tax * surplus_kwh * surplus_p1_kwh_eur",
 }
 
 DATA_STATE = "state"
@@ -107,6 +108,7 @@ STAT_ID_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_energy_cost"
 STAT_ID_P1_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_p1_energy_cost"
 STAT_ID_P2_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_p2_energy_cost"
 STAT_ID_P3_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_p3_energy_cost"
+STAT_ID_SURPLUS_EUR = lambda scups: f"{DOMAIN}:{scups}_surplus_cost"
 STAT_ID_POWER_EUR = lambda scups: f"{DOMAIN}:{scups}_power_cost"
 
 # cups integrity

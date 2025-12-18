@@ -126,6 +126,16 @@ COST_SENSORS_DESC = [
         "last_month_€",
         [],
     ),
+    (
+        "month_surplus_eur",
+        "month_surplus_€",
+        [],
+    ),
+    (
+        "last_month_surplus_eur",
+        "last_month_surplus_€",
+        [],
+    ),
 ]
 
 

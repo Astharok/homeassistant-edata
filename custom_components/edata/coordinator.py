@@ -122,6 +122,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                     const.STAT_ID_P1_ENERGY_EUR(self.id),
                     const.STAT_ID_P2_ENERGY_EUR(self.id),
                     const.STAT_ID_P3_ENERGY_EUR(self.id),
+                    const.STAT_ID_SURPLUS_EUR(self.id),
                 }
             )
 
@@ -156,6 +157,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             const.STAT_ID_P1_ENERGY_EUR(self.id),
             const.STAT_ID_P2_ENERGY_EUR(self.id),
             const.STAT_ID_P3_ENERGY_EUR(self.id),
+            const.STAT_ID_SURPLUS_EUR(self.id),
         }
 
         # We also track last stats sum and datetime
@@ -650,6 +652,16 @@ class EdataCoordinator(DataUpdateCoordinator):
                         state=data["value_eur"],
                     )
                 )
+                
+            if (const.STAT_ID_SURPLUS_EUR(self.id) not in self._last_stats_dt) or (
+                dt_found >= self._last_stats_dt[const.STAT_ID_SURPLUS_EUR(self.id)]
+            ):
+                new_stats[const.STAT_ID_SURPLUS_EUR(self.id)].append(
+                    StatisticData(
+                        start=dt_found,
+                        state=data["surplus_term"],
+                    )
+                )
 
             if tariff == "p1":
                 stat_id_energy_eur_px = const.STAT_ID_P1_ENERGY_EUR(self.id)
@@ -750,7 +762,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         """Apply an async full reset."""
 
         await self.hass.async_add_executor_job(self.soft_wipe)
-        await self._async_update_data(update_statistics=False)
+        await self._async_update_data(update_statistics=True)
         if not await self.check_statistics_integrity():
             await self.rebuild_statistics()
         else:
@@ -761,7 +773,7 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         _LOGGER.warning("Importing last two years of data from Datadis")
         self.set_long_cache()
-        await self._async_update_data(update_statistics=False)
+        await self._async_update_data(update_statistics=True)
         self._edata.process_data()
         # check if consumptions statistics are wrong
         if not await self.check_statistics_integrity():
@@ -808,6 +820,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                         const.PRICE_P1_KWH,
                         const.PRICE_P2_KWH,
                         const.PRICE_P3_KWH,
+                        const.PRICE_SURP_P1_KWH,
                         const.PRICE_METER_MONTH,
                         const.PRICE_MARKET_KW_YEAR,
                         const.PRICE_ELECTRICITY_TAX,

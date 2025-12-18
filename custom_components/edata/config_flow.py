@@ -112,6 +112,7 @@ async def simulate_last_month_billing(
                 const.PRICE_P1_KWH,
                 const.PRICE_P2_KWH,
                 const.PRICE_P3_KWH,
+                const.PRICE_SURP_P1_KWH,
                 const.PRICE_METER_MONTH,
                 const.PRICE_MARKET_KW_YEAR,
                 const.PRICE_ELECTRICITY_TAX,
@@ -235,7 +236,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options."""
 
         if user_input is not None:
-            user_input[const.CONF_SURPLUS] = False
+            #user_input[const.CONF_SURPLUS] = False
             if not user_input[const.CONF_BILLING]:
                 return self.async_create_entry(
                     title="",
@@ -272,7 +273,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             step_id="costs",
             data_schema=vol.Schema(
                 sch.OPTIONS_STEP_COSTS(
-                    self.inputs[const.CONF_PVPC], self.config_entry.options
+                    self.inputs[const.CONF_PVPC], self.inputs[const.CONF_SURPLUS], self.config_entry.options
                 )
             ),
         )
@@ -281,8 +282,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options."""
 
         if user_input is not None:
-            if const.BILLING_SURPLUS_FORMULA not in user_input:
-                user_input[const.BILLING_SURPLUS_FORMULA] = "0"
 
             for key in user_input:
                 self.inputs[key] = (
