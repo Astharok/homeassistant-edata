@@ -166,6 +166,10 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._last_stats_dt = None
         self._corrupt_stats = []
 
+        # Manual import diagnostics (for rate-limit awareness).
+        self._full_import_calls = 0
+        self._full_import_last_run: datetime | None = None
+
         hass.data[const.DOMAIN][self.id]["dt_last"] = self._last_stats_dt
 
         # Just the preamble of the statistics
@@ -223,19 +227,26 @@ class EdataCoordinator(DataUpdateCoordinator):
         consumptions = self._edata.data.get("consumptions", [])
         costs = self._edata.data.get("cost_hourly_sum", [])
         maximeter = self._edata.data.get("maximeter", [])
+        surplus_nonzero = 0
+        surplus_total = 0.0
 
         start_dt = None
         end_dt = None
         if consumptions:
             start_dt = consumptions[0].get("datetime")
             end_dt = consumptions[-1].get("datetime")
+            surplus_values = [x.get("surplus_kWh", 0) or 0 for x in consumptions]
+            surplus_nonzero = sum(1 for x in surplus_values if x > 0)
+            surplus_total = sum(surplus_values)
 
         _LOGGER.info(
-            "%s: refresh summary consumptions=%d costs=%d maximeter=%d range=%s..%s",
+            "%s: refresh summary consumptions=%d costs=%d maximeter=%d surplus_nonzero=%d surplus_total=%.3f range=%s..%s",
             self.scups,
             len(consumptions),
             len(costs),
             len(maximeter),
+            surplus_nonzero,
+            surplus_total,
             start_dt,
             end_dt,
         )
@@ -250,6 +261,12 @@ class EdataCoordinator(DataUpdateCoordinator):
             # reference to attributes shared storage
             attrs = self._data[const.DATA_ATTRIBUTES]
             attrs.update(self._edata.attributes)
+            attrs["import_all_data_calls"] = self._full_import_calls
+            attrs["import_all_data_last_run"] = (
+                None
+                if self._full_import_last_run is None
+                else self._full_import_last_run.isoformat()
+            )
 
             # load into websockets
             self._data[const.WS_CONSUMPTIONS_DAY] = self._edata.data[
@@ -812,6 +829,24 @@ class EdataCoordinator(DataUpdateCoordinator):
 
     async def async_full_import(self):
         """Apply an async full fetch."""
+
+        now = dt_util.now()
+        self._full_import_calls += 1
+
+        if self._full_import_last_run is None:
+            _LOGGER.warning(
+                "%s: import_all_data pressed for the first time", self.scups
+            )
+        else:
+            elapsed = now - self._full_import_last_run
+            _LOGGER.warning(
+                "%s: import_all_data pressed %d times (elapsed since previous run: %s)",
+                self.scups,
+                self._full_import_calls,
+                elapsed,
+            )
+
+        self._full_import_last_run = now
 
         _LOGGER.warning("Importing last two years of data from Datadis")
         self.set_long_cache()

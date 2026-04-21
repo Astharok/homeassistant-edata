@@ -103,12 +103,15 @@ En `home-assistant.log`, filtra por `custom_components.edata` y busca estas traz
 
 - `refresh summary consumptions=... costs=... maximeter=... range=...`
 - `statistics batch edata:...=N, edata:...=N`
+- `import_all_data pressed ...`
 
 Interpretación rápida:
 
 - `refresh summary` confirma cuántos registros se descargaron desde Datadis y su rango temporal.
+- `surplus_nonzero` y `surplus_total` en `refresh summary` indican si Datadis está devolviendo excedente en ese lote.
 - `statistics batch` confirma cuántos puntos nuevos se han escrito por cada `statistic_id`.
 - Si aparece `statistics batch has no new values`, no hay datos nuevos para insertar (normal si ya estaba al día).
+- `import_all_data pressed ...` te avisa cuántas veces se ha lanzado la importación manual y el tiempo transcurrido desde la anterior.
 
 ### Verificación cruzada en Home Assistant
 
@@ -118,6 +121,9 @@ Interpretación rápida:
     - `edata:<scups>_surplus`
     - `edata:<scups>_surplus_cost` (si facturación activa)
 3. Comprueba que las fechas y acumulados coinciden con los lotes del log.
+4. En el sensor `sensor.edata_<scups>` revisa atributos:
+   - `import_all_data_calls`
+   - `import_all_data_last_run`
 
 ### Qué compartir para revisión técnica
 
@@ -125,8 +131,19 @@ Si quieres que revise contigo que todo está correcto, comparte:
 
 - 1 bloque `refresh summary`
 - 1 bloque `statistics batch`
+- 1 línea `import_all_data pressed`
 - el `scups` afectado
 - si facturación está activada o no
+
+## Nota sobre límites de llamadas y botón "Importar todos los datos"
+
+La integración usa la librería `e-data`, que internamente ya cachea y limita parte del tráfico. Aun así, lanzar importaciones completas seguidas no suele aportar datos nuevos si Datadis no ha actualizado histórico.
+
+Recomendación práctica:
+
+- usa el botón de importación completa sólo cuando detectes huecos o tras cambios relevantes de facturación/configuración
+- evita pulsarlo repetidamente en pocos minutos
+- valida primero en log si `surplus_nonzero` sigue en 0: si es 0 de forma persistente, el problema puede ser ausencia de datos de vertido en origen (Datadis) y no la estadística de Home Assistant
 
 ## Cómo traer cambios del repositorio original de forma sencilla
 

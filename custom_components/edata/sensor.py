@@ -17,7 +17,12 @@ INFO_SENSORS_DESC = [
     (
         "info",
         "last_registered_date",
-        ["contract_p1_kW", "contract_p2_kW"],
+        [
+            "contract_p1_kW",
+            "contract_p2_kW",
+            "import_all_data_calls",
+            "import_all_data_last_run",
+        ],
     ),
 ]
 
