@@ -858,6 +858,26 @@ class EdataCoordinator(DataUpdateCoordinator):
                 if c["datetime"] < reimport_from
             ]
 
+            # Reset the helper's per-key rate-limit so it will call Datadis again
+            # (EdataHelper skips the fetch if last_update["consumptions"] < 1 hour ago)
+            self._edata.last_update["consumptions"] = datetime(1970, 1, 1)
+
+            # Clear the connector's disk-based HTTP cache so the GET requests to
+            # Datadis are not served from the 24-hour file cache.
+            import glob as _glob
+            cache_dir = getattr(
+                getattr(self._edata, "datadis_api", None), "_recent_cache_dir", None
+            )
+            if cache_dir and os.path.isdir(cache_dir):
+                _LOGGER.warning(
+                    "%s: clearing datadis connector disk cache at %s",
+                    self.scups,
+                    cache_dir,
+                )
+                for cache_file in _glob.glob(os.path.join(cache_dir, "*")):
+                    with contextlib.suppress(OSError):
+                        os.remove(cache_file)
+
         await self.hass.async_add_executor_job(_purge_cached_consumptions)
 
         # 2. Re-download consumptions for the cached period from Datadis
