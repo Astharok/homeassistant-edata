@@ -3,6 +3,5 @@
   "render_readme": true,
   "country": "ES",
   "homeassistant": "2021.12.0",
-  "zip_release": true,
-  "filename": "homeassistant-edata.zip"
+  "zip_release": false
 }

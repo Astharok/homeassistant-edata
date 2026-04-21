@@ -49,6 +49,18 @@ Cambiar el origen del componente en HACS sin perder la configuración funcional 
 7. Verifica que la integración `edata` sigue apareciendo en `Ajustes > Dispositivos y servicios`.
 8. Comprueba que las entidades `sensor.edata_*`, la tarjeta y los datos históricos siguen disponibles.
 
+### Incidencia conocida: "Downloading ... with version <hash> failed"
+
+Si HACS muestra un error como `Downloading Astharok/homeassistant-edata with version <hash> failed`, revisa:
+
+1. Rama por defecto del repositorio en GitHub:
+   - mientras sea `dev`, HACS intentará descargar `dev`
+   - cuando cambies la rama por defecto a `main`, HACS tomará `main`
+2. Configuración de `hacs.json`:
+   - para evitar dependencia de artefactos de release, este fork usa `"zip_release": false`
+
+Con `zip_release: false`, HACS descarga el contenido del repositorio directamente desde rama/commit y evita fallos por ausencia de zip publicado.
+
 ### Qué no hacer salvo que sea imprescindible
 
 - no elimines la entrada de configuración de la integración desde `Dispositivos y servicios` si sólo estás cambiando el origen del código
