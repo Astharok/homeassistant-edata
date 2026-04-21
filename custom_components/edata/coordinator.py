@@ -205,6 +205,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
             - timedelta(minutes=1),  # to: yesterday midnight
         )
+        self._log_refresh_summary()
 
         if update_statistics:
             await self.update_statistics()
@@ -212,6 +213,32 @@ class EdataCoordinator(DataUpdateCoordinator):
         await self._load_data()
 
         return self._data
+
+    def _log_refresh_summary(self):
+        """Log a compact data summary to validate downloaded payloads."""
+
+        if not _LOGGER.isEnabledFor(logging.INFO):
+            return
+
+        consumptions = self._edata.data.get("consumptions", [])
+        costs = self._edata.data.get("cost_hourly_sum", [])
+        maximeter = self._edata.data.get("maximeter", [])
+
+        start_dt = None
+        end_dt = None
+        if consumptions:
+            start_dt = consumptions[0].get("datetime")
+            end_dt = consumptions[-1].get("datetime")
+
+        _LOGGER.info(
+            "%s: refresh summary consumptions=%d costs=%d maximeter=%d range=%s..%s",
+            self.scups,
+            len(consumptions),
+            len(costs),
+            len(maximeter),
+            start_dt,
+            end_dt,
+        )
 
     async def _load_data(self, preprocess=False):
         """Load data found in built-in statistics into state, attributes and websockets."""
@@ -522,6 +549,21 @@ class EdataCoordinator(DataUpdateCoordinator):
 
     async def _add_statistics(self, new_stats):
         """Add new statistics as a bundle."""
+
+        inserted = {
+            stat_id: len(values)
+            for stat_id, values in new_stats.items()
+            if len(values) > 0
+        }
+
+        if _LOGGER.isEnabledFor(logging.INFO):
+            if inserted:
+                compact = ", ".join(
+                    f"{stat_id}={inserted[stat_id]}" for stat_id in sorted(inserted)
+                )
+                _LOGGER.info("%s: statistics batch %s", self.scups, compact)
+            else:
+                _LOGGER.info("%s: statistics batch has no new values", self.scups)
 
         for stat_id in new_stats:
             if len(new_stats[stat_id]) > 0:

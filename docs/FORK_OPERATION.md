@@ -77,6 +77,57 @@ Comprueba al menos lo siguiente:
 - histórico en panel de Energía y estadísticas si ya lo usabas
 - opciones de facturación sin errores visibles
 
+## Validar con logs y comprobar estadísticas
+
+Sí, se puede validar con logs de forma objetiva. Este fork ya emite trazas resumidas si activas depuración.
+
+### Activar logs útiles
+
+1. En Home Assistant: `Ajustes > Dispositivos y servicios > e-data > Configurar`.
+2. Activa la opción `debug` de la integración.
+3. Reinicia Home Assistant.
+
+Opcionalmente, en `configuration.yaml` puedes forzar niveles de log:
+
+```yaml
+logger:
+   default: warning
+   logs:
+      custom_components.edata: info
+      edata: info
+```
+
+### Qué líneas buscar en el log
+
+En `home-assistant.log`, filtra por `custom_components.edata` y busca estas trazas:
+
+- `refresh summary consumptions=... costs=... maximeter=... range=...`
+- `statistics batch edata:...=N, edata:...=N`
+
+Interpretación rápida:
+
+- `refresh summary` confirma cuántos registros se descargaron desde Datadis y su rango temporal.
+- `statistics batch` confirma cuántos puntos nuevos se han escrito por cada `statistic_id`.
+- Si aparece `statistics batch has no new values`, no hay datos nuevos para insertar (normal si ya estaba al día).
+
+### Verificación cruzada en Home Assistant
+
+1. `Herramientas para desarrolladores > Estadísticas`.
+2. Busca IDs como:
+    - `edata:<scups>_consumption`
+    - `edata:<scups>_surplus`
+    - `edata:<scups>_surplus_cost` (si facturación activa)
+3. Comprueba que las fechas y acumulados coinciden con los lotes del log.
+
+### Qué compartir para revisión técnica
+
+Si quieres que revise contigo que todo está correcto, comparte:
+
+- 1 bloque `refresh summary`
+- 1 bloque `statistics batch`
+- el `scups` afectado
+- si facturación está activada o no
+
 ## Cómo traer cambios del repositorio original de forma sencilla
 
 La estrategia recomendada es mantener siempre `main` de tu fork por delante del upstream y traer cambios del original mediante merge controlado.

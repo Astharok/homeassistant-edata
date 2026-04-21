@@ -47,12 +47,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     authorized_nif = entry.data.get(const.CONF_AUTHORIZEDNIF, None)
     scups = entry.data[const.CONF_SCUPS]
     billing_enabled = entry.options.get(const.CONF_BILLING, False)
+    component_logger = logging.getLogger(f"custom_components.{const.DOMAIN}")
 
     if entry.options.get(const.CONF_DEBUG, False):
         logging.getLogger("edata").setLevel(logging.INFO)
-        # _LOGGER.setLevel(logging.DEBUG)
+        component_logger.setLevel(logging.INFO)
+        _LOGGER.info("%s: debug logging enabled", scups)
     else:
         logging.getLogger("edata").setLevel(logging.WARNING)
+        component_logger.setLevel(logging.WARNING)
 
     if billing_enabled:
         pricing_rules = {
