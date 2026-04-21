@@ -827,6 +827,57 @@ class EdataCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
 
+    async def async_force_surplus_reimport(self):
+        """Re-fetch surplus data for the current cached period and overwrite statistics.
+
+        Use this when historical surplus data was stored as 0 due to a previous
+        version of the integration that did not support surplus. Only the period
+        covered by the current cache window is affected; older data is untouched.
+        """
+
+        _LOGGER.warning(
+            "%s: force surplus reimport requested — purging in-memory consumptions "
+            "for the cached period and rebuilding surplus statistics",
+            self.scups,
+        )
+
+        # Calculate the start of the period that will be re-downloaded
+        # (mirrors the same calculation used in _async_update_data)
+        reimport_from = (
+            datetime.today().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            - relativedelta(months=self.cache_months)
+        )
+
+        # 1. Remove in-memory consumption entries for the cached period so that
+        #    extend_by_key (used internally by EdataHelper) does not skip them
+        #    and the fresh Datadis data (with correct surplusEnergyKWh) is stored.
+        def _purge_cached_consumptions():
+            self._edata.data["consumptions"] = [
+                c
+                for c in self._edata.data.get("consumptions", [])
+                if c["datetime"] < reimport_from
+            ]
+
+        await self.hass.async_add_executor_job(_purge_cached_consumptions)
+
+        # 2. Re-download consumptions for the cached period from Datadis
+        await self._async_update_data(update_statistics=False)
+        await asyncio.to_thread(self._edata.process_data)
+
+        # 3. Clear stats tracking only for the surplus stat ID so that the
+        #    coordinator re-inserts surplus values from reimport_from onwards.
+        surp_stat_id = const.STAT_ID_SURP_KWH(self.id)
+        self._last_stats_dt.pop(surp_stat_id, None)
+        self._last_stats_sum.pop(surp_stat_id, None)
+
+        # 4. Rebuild only the surplus statistic from reimport_from, leaving
+        #    consumption/cost/maximeter statistics untouched.
+        reimport_from_utc = dt_util.as_utc(reimport_from)
+        await self.rebuild_statistics(
+            from_dt=reimport_from_utc,
+            include_only=[surp_stat_id],
+        )
+
     async def async_full_import(self):
         """Apply an async full fetch."""
 

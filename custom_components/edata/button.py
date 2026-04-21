@@ -22,6 +22,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     _entities.append(
         EdataImportButton(coordinator, "import_all_data", coordinator.async_full_import)
     )
+    _entities.append(
+        EdataForceSurplusReimportButton(
+            coordinator,
+            "force_surplus_reimport",
+            coordinator.async_force_surplus_reimport,
+        )
+    )
     async_add_entities(_entities)
 
     return True
@@ -37,3 +44,9 @@ class EdataImportButton(EdataButtonEntity, ButtonEntity):
     """Representation of an e-data import button."""
 
     _attr_icon = "mdi:content-save-all"
+
+
+class EdataForceSurplusReimportButton(EdataButtonEntity, ButtonEntity):
+    """Representation of an e-data force surplus reimport button."""
+
+    _attr_icon = "mdi:solar-power-variant"
