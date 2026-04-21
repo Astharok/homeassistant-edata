@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 from datetime import datetime, timedelta
 import glob
+import json
 import logging
 import math
 import os
@@ -875,6 +876,118 @@ class EdataCoordinator(DataUpdateCoordinator):
             for key in self._edata.last_update:
                 self._edata.last_update[key] = datetime(1970, 1, 1)
 
+    def _get_force_snapshot_file(self) -> str:
+        """Return the file path used to persist forced reimport period snapshots."""
+
+        edata_dir = os.path.join(self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME)
+        os.makedirs(edata_dir, exist_ok=True)
+        return os.path.join(edata_dir, f"edata_force_reimport_{self.cups.lower()}.json")
+
+    def _save_force_period_snapshot(self, date_from: datetime) -> None:
+        """Persist reimported period data to avoid repeated Datadis calls."""
+
+        keys_to_store = [
+            "consumptions",
+            "maximeter",
+            "consumptions_daily_sum",
+            "consumptions_monthly_sum",
+            "cost_hourly_sum",
+            "cost_daily_sum",
+            "cost_monthly_sum",
+        ]
+
+        payload: dict = {
+            "version": 1,
+            "date_from": date_from.isoformat(),
+            "cache_months": self.cache_months,
+            "created_at": datetime.now().isoformat(),
+            "data": {},
+        }
+
+        for key in keys_to_store:
+            values = self._edata.data.get(key, [])
+            if not isinstance(values, list):
+                payload["data"][key] = []
+                continue
+
+            serialized = []
+            for item in values:
+                dt_value = item.get("datetime")
+                if dt_value is None or dt_value < date_from:
+                    continue
+                row = dict(item)
+                row["datetime"] = dt_value.isoformat()
+                serialized.append(row)
+            payload["data"][key] = serialized
+
+        snapshot_file = self._get_force_snapshot_file()
+        with open(snapshot_file, "w", encoding="utf8") as fdesc:
+            json.dump(payload, fdesc)
+
+        _LOGGER.warning(
+            "%s: stored local force-reimport snapshot at %s",
+            self.scups,
+            snapshot_file,
+        )
+
+    def _load_force_period_snapshot(self, date_from: datetime) -> bool:
+        """Load previously saved period data snapshot if compatible."""
+
+        snapshot_file = self._get_force_snapshot_file()
+        if not os.path.exists(snapshot_file):
+            return False
+
+        try:
+            with open(snapshot_file, encoding="utf8") as fdesc:
+                payload = json.load(fdesc)
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.warning("%s: failed to read force snapshot: %s", self.scups, err)
+            return False
+
+        expected_from = date_from.isoformat()
+        if payload.get("date_from") != expected_from:
+            return False
+        if payload.get("cache_months") != self.cache_months:
+            return False
+
+        keys_to_restore = [
+            "consumptions",
+            "maximeter",
+            "consumptions_daily_sum",
+            "consumptions_monthly_sum",
+            "cost_hourly_sum",
+            "cost_daily_sum",
+            "cost_monthly_sum",
+        ]
+
+        for key in keys_to_restore:
+            previous = self._edata.data.get(key, [])
+            keep_older = []
+            if isinstance(previous, list):
+                keep_older = [
+                    item
+                    for item in previous
+                    if item.get("datetime") is not None and item["datetime"] < date_from
+                ]
+
+            restored = []
+            for item in payload.get("data", {}).get(key, []):
+                row = dict(item)
+                dt_raw = row.get("datetime")
+                if dt_raw is None:
+                    continue
+                row["datetime"] = datetime.fromisoformat(dt_raw)
+                restored.append(row)
+
+            self._edata.data[key] = keep_older + restored
+
+        _LOGGER.warning(
+            "%s: using local force-reimport snapshot from %s (no Datadis call)",
+            self.scups,
+            snapshot_file,
+        )
+        return True
+
     def _purge_cached_period_data(self, date_from: datetime) -> None:
         """Delete in-memory period data so fresh payload can overwrite it."""
 
@@ -914,14 +1027,22 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         await self._notify_force_reimport_warning(scope, date_from)
 
-        def _prepare():
+        def _prepare() -> bool:
+            if self._load_force_period_snapshot(date_from):
+                return True
             self._purge_cached_period_data(date_from)
             self._force_reset_fetch_rate_limits()
             self._force_clear_datadis_cache()
+            return False
 
-        await self.hass.async_add_executor_job(_prepare)
+        used_local_snapshot = await self.hass.async_add_executor_job(_prepare)
 
-        await self._async_update_data(update_statistics=False)
+        if not used_local_snapshot:
+            await self._async_update_data(update_statistics=False)
+            await self.hass.async_add_executor_job(
+                self._save_force_period_snapshot, date_from
+            )
+
         await asyncio.to_thread(self._edata.process_data, False)
 
         force_stat_ids = set(self.energy_stat_ids).union(self.maximeter_stat_ids)

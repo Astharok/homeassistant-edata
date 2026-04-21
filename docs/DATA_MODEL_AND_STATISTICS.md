@@ -34,6 +34,8 @@ Cuando la actualización es automática (coordinador periódico), se respetan la
 
 Cuando la actualización se lanza manualmente con botones de forzado, el coordinador limpia la caché de consultas de Datadis y reinicia marcas de última actualización para forzar descarga real.
 
+Para reducir llamadas repetidas al API, los botones de forzado guardan una instantánea local del periodo recargado en storage. Si se vuelve a lanzar la misma recarga (mismo inicio de periodo y misma ventana de caché), se reutiliza esa instantánea sin hacer nuevas llamadas a Datadis.
+
 ## Estadísticas externas registradas
 
 ### Consumo
