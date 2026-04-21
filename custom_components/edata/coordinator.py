@@ -204,8 +204,10 @@ class EdataCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self, update_statistics=True):
         """Update data via API."""
 
-        # fetch last 365 days
-        await self._edata.async_update(
+        # Run the update in a worker and wait for completion before continuing.
+        # e-data's async wrapper can return before the underlying update is done.
+        await asyncio.to_thread(
+            self._edata.update,
             datetime.today().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             - relativedelta(months=self.cache_months),  # since N cache_months
             datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
