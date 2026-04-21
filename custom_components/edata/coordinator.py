@@ -1174,7 +1174,21 @@ class EdataCoordinator(DataUpdateCoordinator):
         )
 
         if not used_local_snapshot:
-            await self._async_update_data(update_statistics=False)
+            # The helper fetches one endpoint per update() call (supplies, contracts,
+            # consumptions, maximeter, pvpc). Loop until consumptions is fetched or
+            # reaching a safety cap.
+            _MAX_UPDATE_ITERATIONS = 6
+            for _attempt in range(_MAX_UPDATE_ITERATIONS):
+                await self._async_update_data(update_statistics=False)
+                new_rows = len(self._edata.data.get("consumptions", []))
+                _LOGGER.warning(
+                    "%s: force reimport update attempt=%d consumptions=%d",
+                    self.scups,
+                    _attempt + 1,
+                    new_rows,
+                )
+                if new_rows > 0:
+                    break
 
             new_rows = len(self._edata.data.get("consumptions", []))
             if new_rows > 0:
@@ -1183,8 +1197,9 @@ class EdataCoordinator(DataUpdateCoordinator):
                 )
             else:
                 _LOGGER.warning(
-                    "%s: force reimport fetched zero consumptions, snapshot not saved",
+                    "%s: force reimport fetched zero consumptions after %d attempts, snapshot not saved",
                     self.scups,
+                    _MAX_UPDATE_ITERATIONS,
                 )
 
         await asyncio.to_thread(self._edata.process_data, False)
