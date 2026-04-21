@@ -106,8 +106,15 @@ Los sensores de coste por excedente existen en `sensor.py` y el fork ya incluye 
 
 - `soft_reset`
 - `import_all_data`
+- `force_surplus_reimport`
 
-Estos botones delegan en métodos del coordinador para reparar inconsistencias o forzar una sincronización completa del histórico.
+Estos botones delegan en métodos del coordinador para reparar inconsistencias o forzar una sincronización.
+
+Comportamiento de botones forzados:
+
+- `import_all_data` fuerza recarga del periodo largo (`CACHE_MONTHS_LONG`) y omite límites de caché/rate-limit para asegurar descarga real desde Datadis.
+- `force_surplus_reimport` fuerza recarga del periodo corto actual (`CACHE_MONTHS_SHORT`) y sobrescribe datos y estadísticas del periodo recargado (consumo, excedente, coste y maxímetro cuando aplique), preservando histórico anterior.
+- Ambos muestran advertencia al usuario mediante notificación persistente de Home Assistant al ejecutarse.
 
 ## Device model en Home Assistant
 

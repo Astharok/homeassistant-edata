@@ -9,7 +9,7 @@
         "name": "Import all available data"
       },
       "force_surplus_reimport": {
-        "name": "Force surplus reimport (current cache period)"
+        "name": "Force period data reimport"
       }
     },
     "sensor": {

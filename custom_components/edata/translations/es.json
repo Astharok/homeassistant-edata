@@ -9,7 +9,7 @@
         "name": "Importar todos los datos disponibles"
       },
       "force_surplus_reimport": {
-        "name": "Reimportar excedentes del periodo actual"
+        "name": "Reimportar datos del periodo actual"
       }
     },
     "sensor": {

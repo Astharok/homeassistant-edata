@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import datetime, timedelta
+import glob
 import logging
 import math
 import os
@@ -15,6 +16,7 @@ from edata.const import PROG_NAME as EDATA_PROG_NAME
 from edata.definitions import ATTRIBUTES, PricingRules
 from edata.helpers import EdataHelper
 from edata.processors import utils
+from homeassistant.components import persistent_notification
 from homeassistant.components.recorder.db_schema import Statistics
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.statistics import (
@@ -537,6 +539,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._corrupt_stats = []
 
         await self._update_consumption_stats()
+        await self._update_maximeter_stats()
         if self.billing_rules:
             # costs are only processed if billing functionality is enabled
             await self._update_cost_stats()
@@ -827,76 +830,119 @@ class EdataCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
 
-    async def async_force_surplus_reimport(self):
-        """Re-fetch surplus data for the current cached period and overwrite statistics.
+    def _get_cached_period_start(self) -> datetime:
+        """Return the first datetime of the currently cached period."""
 
-        Use this when historical surplus data was stored as 0 due to a previous
-        version of the integration that did not support surplus. Only the period
-        covered by the current cache window is affected; older data is untouched.
-        """
+        return datetime.today().replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        ) - relativedelta(months=self.cache_months)
 
-        _LOGGER.warning(
-            "%s: force surplus reimport requested — purging in-memory consumptions "
-            "for the cached period and rebuilding surplus statistics",
-            self.scups,
+    async def _notify_force_reimport_warning(self, scope: str, date_from: datetime) -> None:
+        """Create a UI warning when users trigger a forced reimport."""
+
+        persistent_notification.async_create(
+            self.hass,
+            (
+                "Se ha lanzado una recarga forzada de datos de edata. "
+                "Esta acción ignora limitaciones temporales de caché y forzará "
+                "nueva descarga desde Datadis para el periodo indicado. "
+                f"Ámbito: {scope}. Desde: {date_from.isoformat()}."
+            ),
+            title="edata: recarga forzada en ejecución",
+            notification_id=f"edata_force_reimport_{self.id}",
         )
 
-        # Calculate the start of the period that will be re-downloaded
-        # (mirrors the same calculation used in _async_update_data)
-        reimport_from = (
-            datetime.today().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            - relativedelta(months=self.cache_months)
-        )
+    def _force_clear_datadis_cache(self) -> None:
+        """Clear Datadis connector disk cache to bypass 24h request cache."""
 
-        # 1. Remove in-memory consumption entries for the cached period so that
-        #    extend_by_key (used internally by EdataHelper) does not skip them
-        #    and the fresh Datadis data (with correct surplusEnergyKWh) is stored.
-        def _purge_cached_consumptions():
-            self._edata.data["consumptions"] = [
-                c
-                for c in self._edata.data.get("consumptions", [])
-                if c["datetime"] < reimport_from
-            ]
-
-            # Reset the helper's per-key rate-limit so it will call Datadis again
-            # (EdataHelper skips the fetch if last_update["consumptions"] < 1 hour ago)
-            self._edata.last_update["consumptions"] = datetime(1970, 1, 1)
-
-            # Clear the connector's disk-based HTTP cache so the GET requests to
-            # Datadis are not served from the 24-hour file cache.
-            import glob as _glob
-            cache_dir = getattr(
-                getattr(self._edata, "datadis_api", None), "_recent_cache_dir", None
+        cache_dir = getattr(getattr(self._edata, "datadis_api", None), "_recent_cache_dir", None)
+        if cache_dir and os.path.isdir(cache_dir):
+            _LOGGER.warning(
+                "%s: clearing datadis connector disk cache at %s",
+                self.scups,
+                cache_dir,
             )
-            if cache_dir and os.path.isdir(cache_dir):
-                _LOGGER.warning(
-                    "%s: clearing datadis connector disk cache at %s",
-                    self.scups,
-                    cache_dir,
-                )
-                for cache_file in _glob.glob(os.path.join(cache_dir, "*")):
-                    with contextlib.suppress(OSError):
-                        os.remove(cache_file)
+            for cache_file in glob.glob(os.path.join(cache_dir, "*")):
+                with contextlib.suppress(OSError):
+                    os.remove(cache_file)
 
-        await self.hass.async_add_executor_job(_purge_cached_consumptions)
+    def _force_reset_fetch_rate_limits(self) -> None:
+        """Reset helper fetch timestamps to force Datadis calls on button actions."""
 
-        # 2. Re-download consumptions for the cached period from Datadis
+        if isinstance(self._edata.last_update, dict):
+            for key in self._edata.last_update:
+                self._edata.last_update[key] = datetime(1970, 1, 1)
+
+    def _purge_cached_period_data(self, date_from: datetime) -> None:
+        """Delete in-memory period data so fresh payload can overwrite it."""
+
+        keys_to_filter = [
+            "consumptions",
+            "maximeter",
+            "consumptions_daily_sum",
+            "consumptions_monthly_sum",
+            "cost_hourly_sum",
+            "cost_daily_sum",
+            "cost_monthly_sum",
+        ]
+        for key in keys_to_filter:
+            values = self._edata.data.get(key, [])
+            if isinstance(values, list):
+                self._edata.data[key] = [
+                    item
+                    for item in values
+                    if item.get("datetime") is not None and item["datetime"] < date_from
+                ]
+
+    def _clear_stats_tracking(self, stat_ids: set[str]) -> None:
+        """Reset internal last-stats trackers for selected statistic ids."""
+
+        if self._last_stats_dt is None:
+            self._last_stats_dt = {}
+        if self._last_stats_sum is None:
+            self._last_stats_sum = {}
+        for stat_id in stat_ids:
+            self._last_stats_dt.pop(stat_id, None)
+            self._last_stats_sum.pop(stat_id, None)
+
+    async def _async_force_reimport_period(
+        self, date_from: datetime, scope: str = "period"
+    ) -> None:
+        """Force reimport all metrics for the selected period and overwrite stats."""
+
+        await self._notify_force_reimport_warning(scope, date_from)
+
+        def _prepare():
+            self._purge_cached_period_data(date_from)
+            self._force_reset_fetch_rate_limits()
+            self._force_clear_datadis_cache()
+
+        await self.hass.async_add_executor_job(_prepare)
+
         await self._async_update_data(update_statistics=False)
-        await asyncio.to_thread(self._edata.process_data)
+        await asyncio.to_thread(self._edata.process_data, False)
 
-        # 3. Clear stats tracking only for the surplus stat ID so that the
-        #    coordinator re-inserts surplus values from reimport_from onwards.
-        surp_stat_id = const.STAT_ID_SURP_KWH(self.id)
-        self._last_stats_dt.pop(surp_stat_id, None)
-        self._last_stats_sum.pop(surp_stat_id, None)
+        force_stat_ids = set(self.energy_stat_ids).union(self.maximeter_stat_ids)
+        if self.billing_rules:
+            force_stat_ids.update(self.cost_stat_ids)
 
-        # 4. Rebuild only the surplus statistic from reimport_from, leaving
-        #    consumption/cost/maximeter statistics untouched.
-        reimport_from_utc = dt_util.as_utc(reimport_from)
+        self._clear_stats_tracking(force_stat_ids)
+
         await self.rebuild_statistics(
-            from_dt=reimport_from_utc,
-            include_only=[surp_stat_id],
+            from_dt=dt_util.as_utc(date_from),
+            include_only=sorted(force_stat_ids),
         )
+
+    async def async_force_surplus_reimport(self):
+        """Force reimport all values for current cache window and overwrite stats."""
+
+        reimport_from = self._get_cached_period_start()
+        _LOGGER.warning(
+            "%s: force period reimport requested (from %s)",
+            self.scups,
+            reimport_from.isoformat(),
+        )
+        await self._async_force_reimport_period(reimport_from)
 
     async def async_full_import(self):
         """Apply an async full fetch."""
@@ -921,14 +967,9 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         _LOGGER.warning("Importing last two years of data from Datadis")
         self.set_long_cache()
-        await self._async_update_data(update_statistics=False)
-        await asyncio.to_thread(self._edata.process_data)
-
-        # check if consumptions statistics are wrong
-        if not await self.check_statistics_integrity():
-            await self.rebuild_statistics()
-        else:
-            _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
+        await self._async_force_reimport_period(
+            self._get_cached_period_start(), scope="full_import"
+        )
 
         self.set_short_cache()
         _LOGGER.debug(

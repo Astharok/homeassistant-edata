@@ -30,6 +30,10 @@ La migración se ejecuta al construir el coordinador.
 
 Por defecto usa la ventana corta para recuperar desde el primer día del mes menos 13 meses hasta el final del día anterior.
 
+Cuando la actualización es automática (coordinador periódico), se respetan las limitaciones normales de caché/rate-limit de `e-data`.
+
+Cuando la actualización se lanza manualmente con botones de forzado, el coordinador limpia la caché de consultas de Datadis y reinicia marcas de última actualización para forzar descarga real.
+
 ## Estadísticas externas registradas
 
 ### Consumo
@@ -101,6 +105,8 @@ Esto es especialmente relevante cuando:
 - cambia la configuración de facturación
 - se importa histórico completo
 - aparecen huecos o duplicados por respuestas irregulares de Datadis
+
+Además, el botón `force_surplus_reimport` aplica una reconstrucción por periodo: borra y recalcula estadísticas desde el inicio del periodo recargado, preservando valores previos a ese punto.
 
 ## Implicaciones para el trabajo sobre vertido
 
