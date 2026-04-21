@@ -1192,7 +1192,12 @@ class EdataCoordinator(DataUpdateCoordinator):
                 return True
             self._purge_cached_period_data(date_from)
             self._force_reset_fetch_rate_limits()
-            self._force_clear_datadis_cache()
+            # Do NOT clear the Datadis disk cache here. The cache contains the
+            # last real API responses (including surplusEnergyKWh). Clearing it
+            # forces a live Datadis call which may return 429, writing empty
+            # marker files that block all consumption queries for 24 h.
+            # With in-memory data purged above, extend_by_key will fill from
+            # scratch using the cached Datadis responses without any overwrite issue.
             return False
 
         used_local_snapshot = await self.hass.async_add_executor_job(_prepare)
@@ -1203,6 +1208,19 @@ class EdataCoordinator(DataUpdateCoordinator):
         )
 
         if not used_local_snapshot:
+            # Log disk-cache state so we know if connector will use cached data
+            # or hit Datadis live. Empty files (size=0) are 429 markers.
+            _cache_dir = self._edata.datadis_api._recent_cache_dir
+            if os.path.isdir(_cache_dir):
+                _cache_files = glob.glob(os.path.join(_cache_dir, "*"))
+                _with_data = sum(1 for f in _cache_files if os.path.getsize(f) > 0)
+                _LOGGER.warning(
+                    "%s: force reimport disk-cache files=%d with_data=%d empty_markers=%d",
+                    self.scups,
+                    len(_cache_files),
+                    _with_data,
+                    len(_cache_files) - _with_data,
+                )
             # update() fetches all endpoints (supplies, contracts, consumptions,
             # maximeter) in a single call. With rate limits reset to epoch above,
             # all guards pass and everything is attempted at once.
