@@ -1024,12 +1024,15 @@ class EdataCoordinator(DataUpdateCoordinator):
         with open(snapshot_file, "w", encoding="utf8") as fdesc:
             json.dump(payload, fdesc)
 
-        payload_rows = len(payload["data"].get("consumptions", []))
+        _snap_cons = payload["data"].get("consumptions", [])
         _LOGGER.warning(
-            "%s: stored local force-reimport snapshot at %s (consumptions=%s)",
+            "%s: stored local force-reimport snapshot at %s "
+            "(consumptions=%d first_surplus=%s last_surplus=%s)",
             self.scups,
             snapshot_file,
-            payload_rows,
+            len(_snap_cons),
+            _snap_cons[0].get("surplus_kWh") if _snap_cons else None,
+            _snap_cons[-1].get("surplus_kWh") if _snap_cons else None,
         )
 
     def _load_force_period_snapshot(self, date_from: datetime) -> bool:
@@ -1159,6 +1162,32 @@ class EdataCoordinator(DataUpdateCoordinator):
         await self._notify_force_reimport_warning(scope, date_from)
 
         def _prepare() -> bool:
+            # Pre-check: log current snapshot state before deciding what to do
+            snapshot_file = self._get_force_snapshot_file()
+            if os.path.exists(snapshot_file):
+                try:
+                    with open(snapshot_file, encoding="utf8") as _f:
+                        _peek = json.load(_f)
+                    _snap_cons = _peek.get("data", {}).get("consumptions", [])
+                    _LOGGER.warning(
+                        "%s: force reimport pre-check snapshot exists consumptions=%d "
+                        "first_surplus=%s last_surplus=%s snapshot_date_from=%s snapshot_cache_months=%s",
+                        self.scups,
+                        len(_snap_cons),
+                        _snap_cons[0].get("surplus_kWh") if _snap_cons else None,
+                        _snap_cons[-1].get("surplus_kWh") if _snap_cons else None,
+                        _peek.get("date_from"),
+                        _peek.get("cache_months"),
+                    )
+                except Exception as _err:  # pylint: disable=broad-except
+                    _LOGGER.warning(
+                        "%s: force reimport pre-check snapshot read error: %s",
+                        self.scups,
+                        _err,
+                    )
+            else:
+                _LOGGER.warning("%s: force reimport pre-check no snapshot file found", self.scups)
+
             if self._load_force_period_snapshot(date_from):
                 return True
             self._purge_cached_period_data(date_from)
@@ -1174,32 +1203,37 @@ class EdataCoordinator(DataUpdateCoordinator):
         )
 
         if not used_local_snapshot:
-            # The helper fetches one endpoint per update() call (supplies, contracts,
-            # consumptions, maximeter, pvpc). Loop until consumptions is fetched or
-            # reaching a safety cap.
-            _MAX_UPDATE_ITERATIONS = 6
-            for _attempt in range(_MAX_UPDATE_ITERATIONS):
-                await self._async_update_data(update_statistics=False)
-                new_rows = len(self._edata.data.get("consumptions", []))
-                _LOGGER.warning(
-                    "%s: force reimport update attempt=%d consumptions=%d",
-                    self.scups,
-                    _attempt + 1,
-                    new_rows,
-                )
-                if new_rows > 0:
-                    break
-
+            # update() fetches all endpoints (supplies, contracts, consumptions,
+            # maximeter) in a single call. With rate limits reset to epoch above,
+            # all guards pass and everything is attempted at once.
+            await self._async_update_data(update_statistics=False)
             new_rows = len(self._edata.data.get("consumptions", []))
+            _LOGGER.warning(
+                "%s: force reimport update consumptions=%d",
+                self.scups,
+                new_rows,
+            )
+            if new_rows > 0:
+                _first_c = self._edata.data["consumptions"][0]
+                _last_c = self._edata.data["consumptions"][-1]
+                _LOGGER.warning(
+                    "%s: force reimport consumptions sample "
+                    "first_dt=%s first_surplus=%s last_dt=%s last_surplus=%s",
+                    self.scups,
+                    _first_c.get("datetime"),
+                    _first_c.get("surplus_kWh"),
+                    _last_c.get("datetime"),
+                    _last_c.get("surplus_kWh"),
+                )
+
             if new_rows > 0:
                 await self.hass.async_add_executor_job(
                     self._save_force_period_snapshot, date_from
                 )
             else:
                 _LOGGER.warning(
-                    "%s: force reimport fetched zero consumptions after %d attempts, snapshot not saved",
+                    "%s: force reimport fetched zero consumptions — Datadis may be throttling; retry later",
                     self.scups,
-                    _MAX_UPDATE_ITERATIONS,
                 )
 
         await asyncio.to_thread(self._edata.process_data, False)
