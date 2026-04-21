@@ -1264,9 +1264,14 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         _LOGGER.warning("Importing last two years of data from Datadis")
         self.set_long_cache()
-        await self._async_force_reimport_period(
-            self._get_cached_period_start(), scope="full_import"
-        )
+        await self._async_update_data(update_statistics=False)
+        await asyncio.to_thread(self._edata.process_data)
+
+        # Repair statistics only if they have become corrupt (normal, non-forced path)
+        if not await self.check_statistics_integrity():
+            await self.rebuild_statistics()
+        else:
+            _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
 
         self.set_short_cache()
         _LOGGER.debug(
