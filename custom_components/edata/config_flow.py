@@ -235,7 +235,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options."""
 
         if user_input is not None:
-            #user_input[const.CONF_SURPLUS] = False
             if not user_input[const.CONF_BILLING]:
                 return self.async_create_entry(
                     title="",

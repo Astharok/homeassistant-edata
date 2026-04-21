@@ -43,6 +43,12 @@
       "last_month_eur": {
         "name": "Factura del último mes"
       },
+      "month_surplus_eur": {
+        "name": "Compensación por excedentes del mes"
+      },
+      "last_month_surplus_eur": {
+        "name": "Compensación por excedentes del último mes"
+      },
       "info": {
         "name": "Información del suministro"
       }

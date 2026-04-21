@@ -1,11 +1,17 @@
 [![HACS Supported](https://img.shields.io/badge/HACS-Supported-green.svg)](https://github.com/custom-components/hacs)
-![GitHub Activity](https://img.shields.io/github/commit-activity/y/uvejota/homeassistant-edata.svg?label=commits)
-[![Stable](https://img.shields.io/github/release/uvejota/homeassistant-edata.svg)](https://github.com/uvejota/homeassistant-edata/releases/latest)
+![GitHub Activity](https://img.shields.io/github/commit-activity/y/Astharok/homeassistant-edata.svg?label=commits)
+[![Stable](https://img.shields.io/github/release/Astharok/homeassistant-edata.svg)](https://github.com/Astharok/homeassistant-edata/releases/latest)
 
 # homeassistant-edata
 ![imagen](assets/logo.png)
 
-Esta integración para Home Assistant te permite seguir de un vistazo tu consumo, generación y máximas potencias registradas (maxímetro) configurando tu usuario de Datadis.
+Esta integración para Home Assistant te permite seguir de un vistazo tu consumo, generación, energía vertida o excedente y máximas potencias registradas (maxímetro) configurando tu usuario de Datadis.
+
+## Documentación técnica del proyecto
+
+La documentación técnica y de mantenimiento del proyecto está organizada en la carpeta `docs/`.
+
+El punto de entrada para localizar documentación de forma selectiva es `docs/DOCUMENTATION_MAP.md`. A partir de ese mapa se accede al documento concreto de arquitectura, configuración, estadísticas, frontend, desarrollo o estado del fork.
 
 Para la visualización de los datos, existen varias alternativas:
 1. Configurar el Panel de Energía nativo de Home Assistant.
@@ -34,7 +40,7 @@ Para la visualización de los datos, existen varias alternativas:
 ## Limitaciones
 
 * Los datos mostrados **jamás serán en tiempo real**, ya que se saca de la información que registra/factura tu distribuidora y expone a través de la plataforma Datadis. *Siendo optimistas* obtendrás tus datos con al menos dos días de retraso.
-* Las opciones de tarificación para **estimar** la factura, quedan limitadas a tarifas 2.0TD PVPC, o precio fijo con distinción de tres tramos: punta, llano y valle. La tarificación del retorno NO está disponible aún.
+* Las opciones de tarificación para **estimar** la factura quedan limitadas a tarifas 2.0TD PVPC, o precio fijo con distinción de tres tramos: punta, llano y valle. La compensación económica por excedentes en este fork sigue siendo parcial y requiere validación manual, especialmente fuera del escenario de precio fijo.
 * Se depende de la disponibilidad de Datadis, si la API no devuelve datos, no hay NADA que hacer. **Lo que se ve en la Web de Datadis no tiene por qué coincidir con los datos que devuelve la API, son fuentes distintas**
 
 ## Instalación
@@ -49,7 +55,7 @@ Para instalar esta integración en Home Assistant necesitarás:
 
 Una vez satisfecho lo anterior, los pasos a seguir para la instalación son:
 
-1. Añadir este repositorio (<https://github.com/uvejota/homeassistant-edata>) a los repositorios personalizados de HACS,
+1. Añadir este repositorio (<https://github.com/Astharok/homeassistant-edata>) a los repositorios personalizados de HACS,
 2. Instalar la integración mediante HACS, y
 3. Buscar "edata" en `Configuración > Dispositivos y servicios > Añadir integración`
 

@@ -5,7 +5,7 @@ on:
     types: [published]
   push:
     branches:
-      - dev
+      - main
 
 jobs:
   release:
@@ -31,8 +31,8 @@ jobs:
           overwrite: true
 
   rolling-release:
-    if: github.ref == 'refs/heads/dev'
-    name: dev
+    if: github.ref == 'refs/heads/main'
+    name: main
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -43,11 +43,11 @@ jobs:
           cd custom_components/edata
           zip ../../homeassistant-edata.zip -r ./
 
-      - name: Create/Update dev release
+      - name: Create/Update main prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: dev
-          name: dev
+          tag_name: main
+          name: main
           files: homeassistant-edata.zip
           prerelease: true
         env:

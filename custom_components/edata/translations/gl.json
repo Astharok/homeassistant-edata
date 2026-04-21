@@ -16,6 +16,12 @@
       "last_month_kwh": {
         "name": "Consumo do mes pasado"
       },
+      "month_surplus_eur": {
+        "name": "Compensación por excedentes do mes"
+      },
+      "last_month_surplus_eur": {
+        "name": "Compensación por excedentes do último mes"
+      },
       "yesterday_kwh": {
         "name": "Consumo de onte"
       },

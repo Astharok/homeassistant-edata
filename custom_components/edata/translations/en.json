@@ -43,6 +43,12 @@
       "last_month_eur": {
         "name": "Last month cost"
       },
+      "month_surplus_eur": {
+        "name": "Month surplus compensation"
+      },
+      "last_month_surplus_eur": {
+        "name": "Last month surplus compensation"
+      },
       "info": {
         "name": "Supply Information"
       }

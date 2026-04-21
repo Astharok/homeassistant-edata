@@ -620,7 +620,7 @@ window.customCards.push({
   name: "edata",
   preview: true,
   description: "Visualize edata's data!",
-  documentationURL: "https://github.com/uvejota/homeassistant-edata",
+  documentationURL: "https://github.com/Astharok/homeassistant-edata",
 });
 
 customElements.define("edata-card", EdataCard);

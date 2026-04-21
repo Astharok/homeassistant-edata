@@ -42,7 +42,7 @@ def OPTIONS_STEP_INIT(prev_options: dict[str, typing.Any]) -> dict[str, typing.A
             const.CONF_PVPC,
             default=prev_options.get(const.CONF_PVPC, False),
         ): bool,
-        vol.Required(    # <-- Añadido aquí
+        vol.Required(
             const.CONF_SURPLUS,
             default=prev_options.get(const.CONF_SURPLUS, False),
         ): bool,
@@ -53,6 +53,8 @@ def OPTIONS_STEP_COSTS(
     is_pvpc: bool, is_surplus: bool, prev_options: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
     """Build the options costs step dict schema."""
+
+    effective_surplus = is_surplus and not is_pvpc
 
     base_schema = {
         vol.Required(
@@ -156,7 +158,7 @@ def OPTIONS_STEP_COSTS(
     else:
         schema.update(nonpvpc_schema)
         
-    if is_surplus:
+    if effective_surplus:
         schema.update({
             vol.Required(
                 const.PRICE_SURP_P1_KWH,
@@ -200,7 +202,7 @@ def OPTIONS_STEP_FORMULAS(
                 const.BILLING_OTHERS_FORMULA,
                 default=tokenize(def_formulas[const.BILLING_OTHERS_FORMULA]),
             ): sel.TemplateSelector(),
-            vol.Required(  # <-- AÑADIDO: fórmula de vertido
+            vol.Required(
                 const.BILLING_SURPLUS_FORMULA,
                 default=tokenize(def_formulas.get(const.BILLING_SURPLUS_FORMULA)),
             ): sel.TemplateSelector(),
