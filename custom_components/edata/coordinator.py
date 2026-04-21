@@ -205,14 +205,27 @@ class EdataCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self, update_statistics=True):
         """Update data via API."""
 
+        date_from = datetime.today().replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        ) - relativedelta(months=self.cache_months)
+        date_to = datetime.today().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) - timedelta(minutes=1)
+
+        _LOGGER.warning(
+            "%s: update requested cache_months=%s from=%s to=%s",
+            self.scups,
+            self.cache_months,
+            date_from.isoformat(),
+            date_to.isoformat(),
+        )
+
         # Run the update in a worker and wait for completion before continuing.
         # e-data's async wrapper can return before the underlying update is done.
         await asyncio.to_thread(
             self._edata.update,
-            datetime.today().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            - relativedelta(months=self.cache_months),  # since N cache_months
-            datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
-            - timedelta(minutes=1),  # to: yesterday midnight
+            date_from,
+            date_to,
         )
         self._log_refresh_summary()
 
@@ -924,10 +937,12 @@ class EdataCoordinator(DataUpdateCoordinator):
         with open(snapshot_file, "w", encoding="utf8") as fdesc:
             json.dump(payload, fdesc)
 
+        payload_rows = len(payload["data"].get("consumptions", []))
         _LOGGER.warning(
-            "%s: stored local force-reimport snapshot at %s",
+            "%s: stored local force-reimport snapshot at %s (consumptions=%s)",
             self.scups,
             snapshot_file,
+            payload_rows,
         )
 
     def _load_force_period_snapshot(self, date_from: datetime) -> bool:
@@ -935,6 +950,7 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         snapshot_file = self._get_force_snapshot_file()
         if not os.path.exists(snapshot_file):
+            _LOGGER.warning("%s: no local force snapshot found", self.scups)
             return False
 
         try:
@@ -946,8 +962,20 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         expected_from = date_from.isoformat()
         if payload.get("date_from") != expected_from:
+            _LOGGER.warning(
+                "%s: force snapshot ignored due date mismatch snapshot=%s expected=%s",
+                self.scups,
+                payload.get("date_from"),
+                expected_from,
+            )
             return False
         if payload.get("cache_months") != self.cache_months:
+            _LOGGER.warning(
+                "%s: force snapshot ignored due cache mismatch snapshot=%s expected=%s",
+                self.scups,
+                payload.get("cache_months"),
+                self.cache_months,
+            )
             return False
 
         keys_to_restore = [
@@ -982,9 +1010,10 @@ class EdataCoordinator(DataUpdateCoordinator):
             self._edata.data[key] = keep_older + restored
 
         _LOGGER.warning(
-            "%s: using local force-reimport snapshot from %s (no Datadis call)",
+            "%s: using local force-reimport snapshot from %s (no Datadis call, consumptions=%s)",
             self.scups,
             snapshot_file,
+            len(self._edata.data.get("consumptions", [])),
         )
         return True
 
@@ -1003,11 +1032,20 @@ class EdataCoordinator(DataUpdateCoordinator):
         for key in keys_to_filter:
             values = self._edata.data.get(key, [])
             if isinstance(values, list):
+                before = len(values)
                 self._edata.data[key] = [
                     item
                     for item in values
                     if item.get("datetime") is not None and item["datetime"] < date_from
                 ]
+                after = len(self._edata.data[key])
+                _LOGGER.warning(
+                    "%s: purged key=%s removed=%s kept=%s",
+                    self.scups,
+                    key,
+                    before - after,
+                    after,
+                )
 
     def _clear_stats_tracking(self, stat_ids: set[str]) -> None:
         """Reset internal last-stats trackers for selected statistic ids."""
@@ -1025,6 +1063,12 @@ class EdataCoordinator(DataUpdateCoordinator):
     ) -> None:
         """Force reimport all metrics for the selected period and overwrite stats."""
 
+        _LOGGER.warning(
+            "%s: force reimport start scope=%s date_from=%s",
+            self.scups,
+            scope,
+            date_from.isoformat(),
+        )
         await self._notify_force_reimport_warning(scope, date_from)
 
         def _prepare() -> bool:
@@ -1036,25 +1080,53 @@ class EdataCoordinator(DataUpdateCoordinator):
             return False
 
         used_local_snapshot = await self.hass.async_add_executor_job(_prepare)
+        _LOGGER.warning(
+            "%s: force reimport using_snapshot=%s",
+            self.scups,
+            used_local_snapshot,
+        )
 
         if not used_local_snapshot:
             await self._async_update_data(update_statistics=False)
-            await self.hass.async_add_executor_job(
-                self._save_force_period_snapshot, date_from
-            )
+
+            new_rows = len(self._edata.data.get("consumptions", []))
+            if new_rows > 0:
+                await self.hass.async_add_executor_job(
+                    self._save_force_period_snapshot, date_from
+                )
+            else:
+                _LOGGER.warning(
+                    "%s: force reimport fetched zero consumptions, snapshot not saved",
+                    self.scups,
+                )
 
         await asyncio.to_thread(self._edata.process_data, False)
+        _LOGGER.warning(
+            "%s: force reimport post-process consumptions=%s costs=%s maximeter=%s",
+            self.scups,
+            len(self._edata.data.get("consumptions", [])),
+            len(self._edata.data.get("cost_hourly_sum", [])),
+            len(self._edata.data.get("maximeter", [])),
+        )
 
         force_stat_ids = set(self.energy_stat_ids).union(self.maximeter_stat_ids)
         if self.billing_rules:
             force_stat_ids.update(self.cost_stat_ids)
 
         self._clear_stats_tracking(force_stat_ids)
+        _LOGGER.warning(
+            "%s: force reimport rebuilding stat_ids=%s from=%s",
+            self.scups,
+            len(force_stat_ids),
+            date_from.isoformat(),
+        )
 
         await self.rebuild_statistics(
             from_dt=dt_util.as_utc(date_from),
             include_only=sorted(force_stat_ids),
         )
+
+        _LOGGER.warning("%s: force reimport finished", self.scups)
 
     async def async_force_surplus_reimport(self):
         """Force reimport all values for current cache window and overwrite stats."""
