@@ -220,13 +220,100 @@ class EdataCoordinator(DataUpdateCoordinator):
             date_to.isoformat(),
         )
 
+        pre_counts = {
+            "supplies": len(self._edata.data.get("supplies", [])),
+            "contracts": len(self._edata.data.get("contracts", [])),
+            "consumptions": len(self._edata.data.get("consumptions", [])),
+            "maximeter": len(self._edata.data.get("maximeter", [])),
+            "pvpc": len(self._edata.data.get("pvpc", [])),
+            "cost_hourly_sum": len(self._edata.data.get("cost_hourly_sum", [])),
+        }
+        _LOGGER.warning("%s: update pre-counts %s", self.scups, pre_counts)
+
+        if isinstance(self._edata.last_update, dict):
+            _LOGGER.warning(
+                "%s: update last_update pre supplies=%s contracts=%s consumptions=%s maximeter=%s pvpc=%s",
+                self.scups,
+                self._edata.last_update.get("supplies"),
+                self._edata.last_update.get("contracts"),
+                self._edata.last_update.get("consumptions"),
+                self._edata.last_update.get("maximeter"),
+                self._edata.last_update.get("pvpc"),
+            )
+
+        _LOGGER.warning(
+            "%s: update invoking edata helper cups=%s authorized_nif=%s billing=%s",
+            self.scups,
+            self.cups,
+            bool(self.authorized_nif),
+            self.billing_rules is not None,
+        )
+
         # Run the update in a worker and wait for completion before continuing.
         # e-data's async wrapper can return before the underlying update is done.
-        await asyncio.to_thread(
+        update_result = await asyncio.to_thread(
             self._edata.update,
             date_from,
             date_to,
         )
+        _LOGGER.warning("%s: update helper returned %s", self.scups, update_result)
+
+        post_counts = {
+            "supplies": len(self._edata.data.get("supplies", [])),
+            "contracts": len(self._edata.data.get("contracts", [])),
+            "consumptions": len(self._edata.data.get("consumptions", [])),
+            "maximeter": len(self._edata.data.get("maximeter", [])),
+            "pvpc": len(self._edata.data.get("pvpc", [])),
+            "cost_hourly_sum": len(self._edata.data.get("cost_hourly_sum", [])),
+        }
+        _LOGGER.warning("%s: update post-counts %s", self.scups, post_counts)
+
+        if isinstance(self._edata.last_update, dict):
+            _LOGGER.warning(
+                "%s: update last_update post supplies=%s contracts=%s consumptions=%s maximeter=%s pvpc=%s",
+                self.scups,
+                self._edata.last_update.get("supplies"),
+                self._edata.last_update.get("contracts"),
+                self._edata.last_update.get("consumptions"),
+                self._edata.last_update.get("maximeter"),
+                self._edata.last_update.get("pvpc"),
+            )
+
+        if self._edata.data.get("supplies"):
+            _LOGGER.warning(
+                "%s: update supplies sample cups=%s date_start=%s date_end=%s",
+                self.scups,
+                self._edata.data["supplies"][0].get("cups"),
+                self._edata.data["supplies"][0].get("date_start"),
+                self._edata.data["supplies"][0].get("date_end"),
+            )
+        else:
+            _LOGGER.warning("%s: update got zero supplies", self.scups)
+
+        if self._edata.data.get("contracts"):
+            _LOGGER.warning(
+                "%s: update contracts sample marketer=%s date_start=%s date_end=%s",
+                self.scups,
+                self._edata.data["contracts"][0].get("marketer"),
+                self._edata.data["contracts"][0].get("date_start"),
+                self._edata.data["contracts"][0].get("date_end"),
+            )
+        else:
+            _LOGGER.warning("%s: update got zero contracts", self.scups)
+
+        if self._edata.data.get("consumptions"):
+            first = self._edata.data["consumptions"][0]
+            last = self._edata.data["consumptions"][-1]
+            _LOGGER.warning(
+                "%s: update consumptions sample first=%s last=%s first_value=%s first_surplus=%s",
+                self.scups,
+                first.get("datetime"),
+                last.get("datetime"),
+                first.get("value_kWh"),
+                first.get("surplus_kWh"),
+            )
+        else:
+            _LOGGER.warning("%s: update got zero consumptions", self.scups)
         self._log_refresh_summary()
 
         if update_statistics:
