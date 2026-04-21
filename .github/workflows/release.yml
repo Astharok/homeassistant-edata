@@ -32,7 +32,7 @@ jobs:
 
   rolling-release:
     if: github.ref == 'refs/heads/main'
-    name: main
+    name: rolling-main
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -43,11 +43,11 @@ jobs:
           cd custom_components/edata
           zip ../../homeassistant-edata.zip -r ./
 
-      - name: Create/Update main prerelease
+      - name: Create/Update rolling-main prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: main
-          name: main
+          tag_name: rolling-main
+          name: rolling-main
           files: homeassistant-edata.zip
           prerelease: true
         env:
