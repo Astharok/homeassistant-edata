@@ -1221,10 +1221,19 @@ class EdataCoordinator(DataUpdateCoordinator):
                     _with_data,
                     len(_cache_files) - _with_data,
                 )
-            # update() fetches all endpoints (supplies, contracts, consumptions,
-            # maximeter) in a single call. With rate limits reset to epoch above,
-            # all guards pass and everything is attempted at once.
-            await self._async_update_data(update_statistics=False)
+            # Prevent update() from calling dump_storage() with empty data.
+            # If Datadis returns nothing (429 / throttle), update() would overwrite
+            # the on-disk storage file with an empty consumptions list, destroying
+            # all previously saved history. We restore _must_dump after the call.
+            self._edata._must_dump = False
+            try:
+                # update() fetches all endpoints (supplies, contracts, consumptions,
+                # maximeter) in a single call. With rate limits reset to epoch above,
+                # all guards pass and everything is attempted at once.
+                await self._async_update_data(update_statistics=False)
+            finally:
+                self._edata._must_dump = True
+
             new_rows = len(self._edata.data.get("consumptions", []))
             _LOGGER.warning(
                 "%s: force reimport update consumptions=%d",
@@ -1254,7 +1263,14 @@ class EdataCoordinator(DataUpdateCoordinator):
                     self.scups,
                 )
 
-        await asyncio.to_thread(self._edata.process_data, False)
+        # process_data(False) recalculates aggregates and dumps to disk.
+        # Only do this when we have actual data; if consumptions is empty
+        # we skip the dump to avoid overwriting the on-disk history with zeros.
+        _has_data = len(self._edata.data.get("consumptions", [])) > 0
+        if _has_data:
+            await asyncio.to_thread(self._edata.process_data, False)
+        else:
+            await asyncio.to_thread(self._edata.process_data, True)
         _LOGGER.warning(
             "%s: force reimport post-process consumptions=%s costs=%s maximeter=%s",
             self.scups,
