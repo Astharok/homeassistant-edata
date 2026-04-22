@@ -246,7 +246,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         _LOGGER.warning(
             "%s: update invoking edata helper cups=%s authorized_nif=%s billing=%s",
             self.scups,
-            self.cups,
+            self.scups,
             bool(self.authorized_nif),
             self.billing_rules is not None,
         )
@@ -287,10 +287,11 @@ class EdataCoordinator(DataUpdateCoordinator):
             )
 
         if self._edata.data.get("supplies"):
+            _supply_cups = self._edata.data["supplies"][0].get("cups", "")
             _LOGGER.warning(
-                "%s: update supplies sample cups=%s date_start=%s date_end=%s",
+                "%s: update supplies sample cups=...%s date_start=%s date_end=%s",
                 self.scups,
-                self._edata.data["supplies"][0].get("cups"),
+                _supply_cups[-4:] if _supply_cups else "?",
                 self._edata.data["supplies"][0].get("date_start"),
                 self._edata.data["supplies"][0].get("date_end"),
             )
@@ -1280,7 +1281,10 @@ class EdataCoordinator(DataUpdateCoordinator):
             # Log disk-cache state so we know if connector will use cached data
             # or hit Datadis live. Empty files (size=0) are 429 markers.
             _cache_dir = self._edata.datadis_api._recent_cache_dir
-            if os.path.isdir(_cache_dir):
+
+            def _log_cache_state():
+                if not os.path.isdir(_cache_dir):
+                    return
                 _cache_files = glob.glob(os.path.join(_cache_dir, "*"))
                 _with_data = sum(1 for f in _cache_files if os.path.getsize(f) > 0)
                 _LOGGER.warning(
@@ -1290,6 +1294,8 @@ class EdataCoordinator(DataUpdateCoordinator):
                     _with_data,
                     len(_cache_files) - _with_data,
                 )
+
+            await self.hass.async_add_executor_job(_log_cache_state)
             # Prevent update() from calling dump_storage() with empty data.
             # If Datadis returns nothing (429 / throttle), update() would overwrite
             # the on-disk storage file with an empty consumptions list, destroying
