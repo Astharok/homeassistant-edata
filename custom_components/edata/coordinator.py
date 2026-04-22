@@ -17,6 +17,7 @@ from dateutil.relativedelta import relativedelta
 from edata.const import PROG_NAME as EDATA_PROG_NAME
 from edata.definitions import ATTRIBUTES, PricingRules
 from edata.helpers import EdataHelper
+from edata.storage import dump_storage as edata_dump_storage
 from edata.processors import utils
 from homeassistant.components import persistent_notification
 from homeassistant.components.recorder.db_schema import Statistics
@@ -252,11 +253,16 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         # Run the update in a worker and wait for completion before continuing.
         # e-data's async wrapper can return before the underlying update is done.
-        update_result = await asyncio.to_thread(
-            self._edata.update,
-            date_from,
-            date_to,
-        )
+        # _must_dump=False: we handle the dump ourselves after enrichment.
+        self._edata._must_dump = False
+        try:
+            update_result = await asyncio.to_thread(
+                self._edata.update,
+                date_from,
+                date_to,
+            )
+        finally:
+            self._edata._must_dump = True
         _LOGGER.warning("%s: update helper returned %s", self.scups, update_result)
 
         post_counts = {
@@ -318,7 +324,21 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._log_refresh_summary()
 
         if post_counts["consumptions"] > 0:
+            # Enrich consumptions with extra Datadis fields the library drops,
+            # then save to disk. Skip dump when empty to protect existing data.
+            await self.hass.async_add_executor_job(self._enrich_consumptions_from_cache)
+            await self.hass.async_add_executor_job(
+                edata_dump_storage,
+                self._edata._cups,
+                self._edata.data,
+                self._edata._storage_dir,
+            )
             await self.hass.async_add_executor_job(self._rotate_storage_backup)
+        else:
+            _LOGGER.warning(
+                "%s: skipping dump — consumptions still zero after update",
+                self.scups,
+            )
 
         if update_statistics:
             await self.update_statistics()
@@ -993,6 +1013,74 @@ class EdataCoordinator(DataUpdateCoordinator):
         backups_dir = os.path.join(edata_dir, "backups")
         os.makedirs(backups_dir, exist_ok=True)
         return backups_dir
+
+    def _enrich_consumptions_from_cache(self) -> int:
+        """Enrich in-memory consumptions with extra fields the edata library drops.
+
+        Reads the Datadis disk-cache files and adds generation_kWh,
+        self_consumption_kWh and obtain_method to each consumption entry so
+        they are persisted to edata_CUPS.json for future use.
+
+        Returns the number of entries that were enriched.
+        """
+        cache_dir = os.path.join(
+            self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME, "cache"
+        )
+        if not os.path.isdir(cache_dir):
+            _LOGGER.debug("%s: cache dir not found, skipping enrichment", self.scups)
+            return 0
+
+        # Build lookup: datetime → extra fields from every cache file
+        extra: dict[datetime, dict] = {}
+        for cache_file in glob.glob(os.path.join(cache_dir, "*")):
+            try:
+                with open(cache_file, encoding="utf8") as fh:
+                    items = json.load(fh)
+                if not isinstance(items, list) or not items:
+                    continue
+                # Only process consumption responses (have consumptionKWh)
+                if "consumptionKWh" not in items[0]:
+                    continue
+                for item in items:
+                    if not all(k in item for k in ("date", "time", "consumptionKWh")):
+                        continue
+                    try:
+                        hour = str(int(item["time"].split(":")[0]) - 1)
+                        dt = datetime.strptime(
+                            f"{item['date']} {hour.zfill(2)}:00", "%Y/%m/%d %H:%M"
+                        )
+                    except (ValueError, IndexError):
+                        continue
+                    generation = item.get("generationEnergyKWh")
+                    self_cons = item.get("selfConsumptionEnergyKWh")
+                    obtain = item.get("obtainMethod")
+                    if any(v is not None for v in (generation, self_cons, obtain)):
+                        extra[dt] = {
+                            "generation_kWh": generation,
+                            "self_consumption_kWh": self_cons,
+                            "obtain_method": obtain,
+                        }
+            except (json.JSONDecodeError, OSError, KeyError):
+                continue
+
+        if not extra:
+            _LOGGER.debug("%s: no extra fields found in cache", self.scups)
+            return 0
+
+        enriched = 0
+        for entry in self._edata.data.get("consumptions", []):
+            dt = entry.get("datetime")
+            if dt in extra:
+                entry.update(extra[dt])
+                enriched += 1
+
+        _LOGGER.debug(
+            "%s: enriched %d/%d consumption entries from cache",
+            self.scups,
+            enriched,
+            len(self._edata.data.get("consumptions", [])),
+        )
+        return enriched
 
     def _rotate_storage_backup(self) -> None:
         """Copy current on-disk storage to dated backup; prune files > 30 days.
