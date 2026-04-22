@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import shutil
 
 from dateutil.relativedelta import relativedelta
 
@@ -315,6 +316,9 @@ class EdataCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.warning("%s: update got zero consumptions", self.scups)
         self._log_refresh_summary()
+
+        if post_counts["consumptions"] > 0:
+            await self.hass.async_add_executor_job(self._rotate_storage_backup)
 
         if update_statistics:
             await self.update_statistics()
@@ -976,99 +980,101 @@ class EdataCoordinator(DataUpdateCoordinator):
             for key in self._edata.last_update:
                 self._edata.last_update[key] = datetime(1970, 1, 1)
 
-    def _get_force_snapshot_file(self) -> str:
-        """Return the file path used to persist forced reimport period snapshots."""
+    # ------------------------------------------------------------------
+    # Rolling backup helpers (replaces single-snapshot logic)
+    # ------------------------------------------------------------------
+
+    _BACKUP_RETENTION_DAYS = 30
+
+    def _get_backups_dir(self) -> str:
+        """Return the path to the rolling backups directory."""
 
         edata_dir = os.path.join(self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME)
-        os.makedirs(edata_dir, exist_ok=True)
-        return os.path.join(edata_dir, f"edata_force_reimport_{self.cups.lower()}.json")
+        backups_dir = os.path.join(edata_dir, "backups")
+        os.makedirs(backups_dir, exist_ok=True)
+        return backups_dir
 
-    def _save_force_period_snapshot(self, date_from: datetime) -> None:
-        """Persist reimported period data to avoid repeated Datadis calls."""
+    def _rotate_storage_backup(self) -> None:
+        """Copy current on-disk storage to dated backup; prune files > 30 days.
 
-        keys_to_store = [
-            "consumptions",
-            "maximeter",
-            "consumptions_daily_sum",
-            "consumptions_monthly_sum",
-            "cost_hourly_sum",
-            "cost_daily_sum",
-            "cost_monthly_sum",
-        ]
+        Only runs when the on-disk file has consumptions > 0 so we never
+        rotate an empty/broken state into the backup history.
+        """
 
-        payload: dict = {
-            "version": 1,
-            "date_from": date_from.isoformat(),
-            "cache_months": self.cache_months,
-            "created_at": datetime.now().isoformat(),
-            "data": {},
-        }
-
-        for key in keys_to_store:
-            values = self._edata.data.get(key, [])
-            if not isinstance(values, list):
-                payload["data"][key] = []
-                continue
-
-            serialized = []
-            for item in values:
-                dt_value = item.get("datetime")
-                if dt_value is None or dt_value < date_from:
-                    continue
-                row = dict(item)
-                row["datetime"] = dt_value.isoformat()
-                serialized.append(row)
-            payload["data"][key] = serialized
-
-        snapshot_file = self._get_force_snapshot_file()
-        with open(snapshot_file, "w", encoding="utf8") as fdesc:
-            json.dump(payload, fdesc)
-
-        _snap_cons = payload["data"].get("consumptions", [])
-        _LOGGER.warning(
-            "%s: stored local force-reimport snapshot at %s "
-            "(consumptions=%d first_surplus=%s last_surplus=%s)",
-            self.scups,
-            snapshot_file,
-            len(_snap_cons),
-            _snap_cons[0].get("surplus_kWh") if _snap_cons else None,
-            _snap_cons[-1].get("surplus_kWh") if _snap_cons else None,
-        )
-
-    def _load_force_period_snapshot(self, date_from: datetime) -> bool:
-        """Load previously saved period data snapshot if compatible."""
-
-        snapshot_file = self._get_force_snapshot_file()
-        if not os.path.exists(snapshot_file):
-            _LOGGER.warning("%s: no local force snapshot found", self.scups)
-            return False
+        edata_dir = os.path.join(self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME)
+        src = os.path.join(edata_dir, f"edata_{self.cups.lower()}.json")
+        if not os.path.exists(src):
+            return
 
         try:
-            with open(snapshot_file, encoding="utf8") as fdesc:
-                payload = json.load(fdesc)
+            with open(src, encoding="utf8") as f:
+                data = json.load(f)
         except Exception as err:  # pylint: disable=broad-except
-            _LOGGER.warning("%s: failed to read force snapshot: %s", self.scups, err)
+            _LOGGER.warning("%s: backup rotation skipped, cannot read storage: %s", self.scups, err)
+            return
+
+        if len(data.get("consumptions", [])) == 0:
+            _LOGGER.warning("%s: backup rotation skipped, storage has no consumptions", self.scups)
+            return
+
+        backups_dir = self._get_backups_dir()
+        today_str = datetime.today().strftime("%Y-%m-%d")
+        dst = os.path.join(backups_dir, f"edata_{self.cups.lower()}_{today_str}.json")
+
+        shutil.copy2(src, dst)
+        _LOGGER.warning(
+            "%s: storage backup rotated → %s (consumptions=%d)",
+            self.scups,
+            dst,
+            len(data.get("consumptions", [])),
+        )
+
+        # Prune backups older than retention limit
+        cutoff = datetime.today() - timedelta(days=self._BACKUP_RETENTION_DAYS)
+        for bfile in glob.glob(os.path.join(backups_dir, f"edata_{self.cups.lower()}_*.json")):
+            bname = os.path.basename(bfile)
+            try:
+                date_part = bname.replace(f"edata_{self.cups.lower()}_", "").replace(".json", "")
+                bdate = datetime.strptime(date_part, "%Y-%m-%d")
+                if bdate < cutoff:
+                    os.remove(bfile)
+                    _LOGGER.warning("%s: pruned old backup %s", self.scups, bname)
+            except (ValueError, OSError):
+                pass
+
+    def _load_latest_storage_backup(self, date_from: datetime) -> bool:
+        """Load the most recent rolling backup that has consumptions into memory.
+
+        Keeps in-memory data before date_from untouched; replaces everything
+        from date_from onwards with backup content. Returns True if loaded.
+        """
+
+        backups_dir = self._get_backups_dir()
+        candidates = sorted(
+            glob.glob(os.path.join(backups_dir, f"edata_{self.cups.lower()}_*.json")),
+            reverse=True,  # newest first
+        )
+
+        selected = None
+        selected_cons = 0
+        for bfile in candidates:
+            try:
+                with open(bfile, encoding="utf8") as f:
+                    payload = json.load(f)
+                n = len(payload.get("consumptions", []))
+                if n > 0:
+                    selected = (bfile, payload)
+                    selected_cons = n
+                    break
+            except Exception:  # pylint: disable=broad-except
+                continue
+
+        if selected is None:
+            _LOGGER.warning("%s: no usable storage backup found in %s", self.scups, backups_dir)
             return False
 
-        expected_from = date_from.isoformat()
-        if payload.get("date_from") != expected_from:
-            _LOGGER.warning(
-                "%s: force snapshot ignored due date mismatch snapshot=%s expected=%s",
-                self.scups,
-                payload.get("date_from"),
-                expected_from,
-            )
-            return False
-        if payload.get("cache_months") != self.cache_months:
-            _LOGGER.warning(
-                "%s: force snapshot ignored due cache mismatch snapshot=%s expected=%s",
-                self.scups,
-                payload.get("cache_months"),
-                self.cache_months,
-            )
-            return False
-
-        keys_to_restore = [
+        bfile, payload = selected
+        keys = [
             "consumptions",
             "maximeter",
             "consumptions_daily_sum",
@@ -1078,32 +1084,35 @@ class EdataCoordinator(DataUpdateCoordinator):
             "cost_monthly_sum",
         ]
 
-        for key in keys_to_restore:
+        for key in keys:
+            # Keep existing in-memory entries that predate date_from
             previous = self._edata.data.get(key, [])
-            keep_older = []
-            if isinstance(previous, list):
-                keep_older = [
-                    item
-                    for item in previous
-                    if item.get("datetime") is not None and item["datetime"] < date_from
-                ]
-
+            keep_older = [
+                item for item in previous
+                if isinstance(item, dict)
+                and item.get("datetime") is not None
+                and item["datetime"] < date_from
+            ]
+            # Deserialize backup entries (datetimes are ISO strings in the file)
             restored = []
-            for item in payload.get("data", {}).get(key, []):
+            for item in payload.get(key, []):
                 row = dict(item)
                 dt_raw = row.get("datetime")
                 if dt_raw is None:
                     continue
-                row["datetime"] = datetime.fromisoformat(dt_raw)
+                if not isinstance(dt_raw, datetime):
+                    try:
+                        row["datetime"] = datetime.fromisoformat(str(dt_raw))
+                    except (ValueError, TypeError):
+                        continue
                 restored.append(row)
-
             self._edata.data[key] = keep_older + restored
 
         _LOGGER.warning(
-            "%s: using local force-reimport snapshot from %s (no Datadis call, consumptions=%s)",
+            "%s: loaded storage backup %s (consumptions=%d)",
             self.scups,
-            snapshot_file,
-            len(self._edata.data.get("consumptions", [])),
+            os.path.basename(bfile),
+            selected_cons,
         )
         return True
 
@@ -1162,42 +1171,14 @@ class EdataCoordinator(DataUpdateCoordinator):
         await self._notify_force_reimport_warning(scope, date_from)
 
         def _prepare() -> bool:
-            # Pre-check: log current snapshot state before deciding what to do
-            snapshot_file = self._get_force_snapshot_file()
-            if os.path.exists(snapshot_file):
-                try:
-                    with open(snapshot_file, encoding="utf8") as _f:
-                        _peek = json.load(_f)
-                    _snap_cons = _peek.get("data", {}).get("consumptions", [])
-                    _LOGGER.warning(
-                        "%s: force reimport pre-check snapshot exists consumptions=%d "
-                        "first_surplus=%s last_surplus=%s snapshot_date_from=%s snapshot_cache_months=%s",
-                        self.scups,
-                        len(_snap_cons),
-                        _snap_cons[0].get("surplus_kWh") if _snap_cons else None,
-                        _snap_cons[-1].get("surplus_kWh") if _snap_cons else None,
-                        _peek.get("date_from"),
-                        _peek.get("cache_months"),
-                    )
-                except Exception as _err:  # pylint: disable=broad-except
-                    _LOGGER.warning(
-                        "%s: force reimport pre-check snapshot read error: %s",
-                        self.scups,
-                        _err,
-                    )
-            else:
-                _LOGGER.warning("%s: force reimport pre-check no snapshot file found", self.scups)
-
-            if self._load_force_period_snapshot(date_from):
+            # Try to load the most recent rolling backup (backups/ dir).
+            # This avoids any Datadis call and is safe even after 429 lockouts.
+            if self._load_latest_storage_backup(date_from):
                 return True
+            # No usable backup: purge in-memory period data and reset rate limits
+            # so update() will re-fetch from Datadis (or disk-cache if still valid).
             self._purge_cached_period_data(date_from)
             self._force_reset_fetch_rate_limits()
-            # Do NOT clear the Datadis disk cache here. The cache contains the
-            # last real API responses (including surplusEnergyKWh). Clearing it
-            # forces a live Datadis call which may return 429, writing empty
-            # marker files that block all consumption queries for 24 h.
-            # With in-memory data purged above, extend_by_key will fill from
-            # scratch using the cached Datadis responses without any overwrite issue.
             return False
 
         used_local_snapshot = await self.hass.async_add_executor_job(_prepare)
@@ -1253,15 +1234,13 @@ class EdataCoordinator(DataUpdateCoordinator):
                     _last_c.get("surplus_kWh"),
                 )
 
-            if new_rows > 0:
-                await self.hass.async_add_executor_job(
-                    self._save_force_period_snapshot, date_from
-                )
-            else:
+            if new_rows == 0:
                 _LOGGER.warning(
                     "%s: force reimport fetched zero consumptions — Datadis may be throttling; retry later",
                     self.scups,
                 )
+            # Rotation is triggered automatically inside _async_update_data
+            # when consumptions > 0, so no explicit save needed here.
 
         # process_data(False) recalculates aggregates and dumps to disk.
         # Only do this when we have actual data; if consumptions is empty
@@ -1332,8 +1311,17 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         _LOGGER.warning("Importing last two years of data from Datadis")
         self.set_long_cache()
-        await self._async_update_data(update_statistics=False)
-        await asyncio.to_thread(self._edata.process_data)
+        # Prevent update() from dumping empty state if Datadis returns nothing.
+        # _async_update_data will trigger _rotate_storage_backup only when
+        # consumptions > 0, so the rolling backup is always consistent.
+        self._edata._must_dump = False
+        try:
+            await self._async_update_data(update_statistics=False)
+        finally:
+            self._edata._must_dump = True
+
+        if len(self._edata.data.get("consumptions", [])) > 0:
+            await asyncio.to_thread(self._edata.process_data)
 
         # Repair statistics only if they have become corrupt (normal, non-forced path)
         if not await self.check_statistics_integrity():
@@ -1345,7 +1333,11 @@ class EdataCoordinator(DataUpdateCoordinator):
         _LOGGER.debug(
             "%s: reducing cache items to last %s months", self.scups, self.cache_months
         )
-        await self._async_update_data(update_statistics=False)
+        self._edata._must_dump = False
+        try:
+            await self._async_update_data(update_statistics=False)
+        finally:
+            self._edata._must_dump = True
 
     def set_long_cache(self):
         """Set the number of cached monts to a long value (two years)."""
