@@ -325,15 +325,22 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._log_refresh_summary()
 
         if post_counts["consumptions"] > 0:
-            # Enrich consumptions with extra Datadis fields the library drops,
-            # then save to disk. Skip dump when empty to protect existing data.
-            await self.hass.async_add_executor_job(self._enrich_consumptions_from_cache)
+            # 1. Dump clean data first — edata's EdataSchema (voluptuous) uses
+            #    PREVENT_EXTRA so any unknown keys raise Invalid. Extra Datadis
+            #    fields must NOT be in self._edata.data when dump_storage runs.
             await self.hass.async_add_executor_job(
                 edata_dump_storage,
                 self._edata._cups,
                 self._edata.data,
                 self._edata._storage_dir,
             )
+            # 2. Enrich in-memory consumptions with fields the library drops
+            #    (generation_kWh, self_consumption_kWh, obtain_method) and
+            #    persist them to a sidecar JSON file we own.
+            await self.hass.async_add_executor_job(self._enrich_consumptions_from_cache)
+            # 3. Apply all previously saved extras (including months whose
+            #    disk-cache files have already expired).
+            await self.hass.async_add_executor_job(self._apply_extras_sidecar)
             await self.hass.async_add_executor_job(self._rotate_storage_backup)
         else:
             _LOGGER.warning(
@@ -1015,14 +1022,30 @@ class EdataCoordinator(DataUpdateCoordinator):
         os.makedirs(backups_dir, exist_ok=True)
         return backups_dir
 
+    def _get_extras_sidecar_path(self) -> str:
+        """Return path to the extras sidecar JSON file.
+
+        edata_CUPS_extras.json lives alongside edata_CUPS.json in the edata
+        storage subdir. It is owned entirely by this coordinator and never
+        passed through edata's EdataSchema validation.
+        """
+        edata_dir = os.path.join(self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME)
+        return os.path.join(
+            edata_dir, f"edata_{self._edata._cups.lower()}_extras.json"
+        )
+
     def _enrich_consumptions_from_cache(self) -> int:
-        """Enrich in-memory consumptions with extra fields the edata library drops.
+        """Read fresh Datadis disk-cache files and persist extra fields.
 
-        Reads the Datadis disk-cache files and adds generation_kWh,
-        self_consumption_kWh and obtain_method to each consumption entry so
-        they are persisted to edata_CUPS.json for future use.
+        Extracts generation_kWh, self_consumption_kWh and obtain_method from
+        the connector's cache, saves them to a sidecar JSON file (accumulative,
+        keyed by ISO datetime string) and applies them to in-memory consumptions.
 
-        Returns the number of entries that were enriched.
+        Note: These fields cannot be saved inside edata_CUPS.json because the
+        library's EdataSchema (voluptuous PREVENT_EXTRA) rejects unknown keys.
+        The sidecar file edata_CUPS_extras.json is owned by this coordinator.
+
+        Returns the number of in-memory entries enriched in this call.
         """
         cache_dir = os.path.join(
             self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME, "cache"
@@ -1031,7 +1054,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("%s: cache dir not found, skipping enrichment", self.scups)
             return 0
 
-        # Build lookup: datetime → extra fields from every cache file
+        # Build lookup from fresh cache: datetime object → extra fields
         extra: dict[datetime, dict] = {}
         for cache_file in glob.glob(os.path.join(cache_dir, "*")):
             try:
@@ -1039,7 +1062,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                     items = json.load(fh)
                 if not isinstance(items, list) or not items:
                     continue
-                # Only process consumption responses (have consumptionKWh)
+                # Only process consumption responses (keyed by consumptionKWh)
                 if "consumptionKWh" not in items[0]:
                     continue
                 for item in items:
@@ -1047,7 +1070,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                         continue
                     try:
                         hour = str(int(item["time"].split(":")[0]) - 1)
-                        dt = datetime.strptime(
+                        dt_key = datetime.strptime(
                             f"{item['date']} {hour.zfill(2)}:00", "%Y/%m/%d %H:%M"
                         )
                     except (ValueError, IndexError):
@@ -1056,7 +1079,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                     self_cons = item.get("selfConsumptionEnergyKWh")
                     obtain = item.get("obtainMethod")
                     if any(v is not None for v in (generation, self_cons, obtain)):
-                        extra[dt] = {
+                        extra[dt_key] = {
                             "generation_kWh": generation,
                             "self_consumption_kWh": self_cons,
                             "obtain_method": obtain,
@@ -1068,18 +1091,74 @@ class EdataCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("%s: no extra fields found in cache", self.scups)
             return 0
 
+        # Merge new extras into sidecar (accumulative across update cycles)
+        sidecar_path = self._get_extras_sidecar_path()
+        existing_extras: dict[str, dict] = {}
+        with contextlib.suppress(Exception):
+            with open(sidecar_path, encoding="utf8") as fh:
+                existing_extras = json.load(fh)
+        for dt_key, fields in extra.items():
+            existing_extras[dt_key.isoformat()] = fields
+        with contextlib.suppress(Exception):
+            os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
+            with open(sidecar_path, "w", encoding="utf8") as fh:
+                json.dump(existing_extras, fh)
+
+        # Apply to in-memory consumptions (matching by datetime object)
         enriched = 0
         for entry in self._edata.data.get("consumptions", []):
-            dt = entry.get("datetime")
-            if dt in extra:
-                entry.update(extra[dt])
+            entry_dt = entry.get("datetime")
+            if entry_dt in extra:
+                entry.update(extra[entry_dt])
                 enriched += 1
 
         _LOGGER.debug(
-            "%s: enriched %d/%d consumption entries from cache",
+            "%s: enriched %d/%d entries from cache; sidecar now %d entries",
             self.scups,
             enriched,
             len(self._edata.data.get("consumptions", [])),
+            len(existing_extras),
+        )
+        return enriched
+
+    def _apply_extras_sidecar(self) -> int:
+        """Apply all saved extras from the sidecar file to in-memory consumptions.
+
+        Called after every successful update to restore extra Datadis fields
+        for entries whose disk-cache files have already expired (> 24 h old).
+        Safe to call repeatedly — entry.update() with the same values is a no-op.
+
+        Returns the number of in-memory entries that received extra fields.
+        """
+        sidecar_path = self._get_extras_sidecar_path()
+        extras: dict[str, dict] = {}
+        with contextlib.suppress(Exception):
+            with open(sidecar_path, encoding="utf8") as fh:
+                extras = json.load(fh)
+
+        if not extras:
+            return 0
+
+        enriched = 0
+        for entry in self._edata.data.get("consumptions", []):
+            entry_dt = entry.get("datetime")
+            if entry_dt is None:
+                continue
+            key = (
+                entry_dt.isoformat()
+                if hasattr(entry_dt, "isoformat")
+                else str(entry_dt)
+            )
+            if key in extras:
+                entry.update(extras[key])
+                enriched += 1
+
+        _LOGGER.debug(
+            "%s: applied extras to %d/%d entries from sidecar (%d total in sidecar)",
+            self.scups,
+            enriched,
+            len(self._edata.data.get("consumptions", [])),
+            len(extras),
         )
         return enriched
 
