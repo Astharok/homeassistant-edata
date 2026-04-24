@@ -333,6 +333,13 @@ class EdataCoordinator(DataUpdateCoordinator):
             # 1. Dump clean data first — edata's EdataSchema (voluptuous) uses
             #    PREVENT_EXTRA so any unknown keys raise Invalid. Extra Datadis
             #    fields must NOT be in self._edata.data when dump_storage runs.
+            #    We strip any extras we may have injected in a previous cycle
+            #    (e.g. when update() returns None and the in-memory dict is kept
+            #    from the last enrichment pass).
+            _EXTRAS_KEYS = {"generation_kWh", "self_consumption_kWh", "obtain_method"}
+            for _rec in self._edata.data.get("consumptions", []):
+                for _k in _EXTRAS_KEYS:
+                    _rec.pop(_k, None)
             await self.hass.async_add_executor_job(
                 edata_dump_storage,
                 self._edata._cups,
