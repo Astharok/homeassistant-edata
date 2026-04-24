@@ -48,6 +48,32 @@ from .utils import get_db_instance
 
 _LOGGER = logging.getLogger(__name__)
 
+# Extra keys injected in-memory by _enrich_consumptions_from_cache / _apply_extras_sidecar.
+# They must NOT be present when passing consumptions to the edata library, which uses
+# EdataSchema (voluptuous PREVENT_EXTRA) internally in BillingProcessor and dump_storage.
+_EXTRAS_KEYS: frozenset[str] = frozenset(
+    {"generation_kWh", "self_consumption_kWh", "obtain_method"}
+)
+
+
+@contextlib.contextmanager
+def _clean_consumptions(consumptions: list[dict]):
+    """Context manager that temporarily strips extra keys from consumption records.
+
+    Pops _EXTRAS_KEYS from each record on enter, restores the saved values on exit.
+    This lets callers pass the raw in-memory list to edata library functions that
+    validate with EdataSchema (PREVENT_EXTRA) without copying the whole list.
+    """
+    saved: list[dict] = []
+    for rec in consumptions:
+        snapshot = {k: rec.pop(k) for k in _EXTRAS_KEYS if k in rec}
+        saved.append(snapshot)
+    try:
+        yield
+    finally:
+        for rec, snapshot in zip(consumptions, saved):
+            rec.update(snapshot)
+
 
 class EdataCoordinator(DataUpdateCoordinator):
     """Handle Datadis data and statistics.."""
@@ -331,21 +357,16 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         if post_counts["consumptions"] > 0:
             # 1. Dump clean data first — edata's EdataSchema (voluptuous) uses
-            #    PREVENT_EXTRA so any unknown keys raise Invalid. Extra Datadis
-            #    fields must NOT be in self._edata.data when dump_storage runs.
-            #    We strip any extras we may have injected in a previous cycle
-            #    (e.g. when update() returns None and the in-memory dict is kept
-            #    from the last enrichment pass).
-            _EXTRAS_KEYS = {"generation_kWh", "self_consumption_kWh", "obtain_method"}
-            for _rec in self._edata.data.get("consumptions", []):
-                for _k in _EXTRAS_KEYS:
-                    _rec.pop(_k, None)
-            await self.hass.async_add_executor_job(
-                edata_dump_storage,
-                self._edata._cups,
-                self._edata.data,
-                self._edata._storage_dir,
-            )
+            #    PREVENT_EXTRA so any unknown keys raise Invalid. Strip extras
+            #    temporarily via context manager and restore them afterwards.
+            _consumptions = self._edata.data.get("consumptions", [])
+            with _clean_consumptions(_consumptions):
+                await self.hass.async_add_executor_job(
+                    edata_dump_storage,
+                    self._edata._cups,
+                    self._edata.data,
+                    self._edata._storage_dir,
+                )
             # 2. Enrich in-memory consumptions with fields the library drops
             #    (generation_kWh, self_consumption_kWh, obtain_method) and
             #    persist them to a sidecar JSON file we own.
@@ -405,7 +426,9 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         try:
             if preprocess:
-                await asyncio.to_thread(self._edata.process_data)
+                _consumptions = self._edata.data.get("consumptions", [])
+                with _clean_consumptions(_consumptions):
+                    await asyncio.to_thread(self._edata.process_data)
 
             # reference to attributes shared storage
             attrs = self._data[const.DATA_ATTRIBUTES]
@@ -507,7 +530,9 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._corrupt_stats = []
 
         # recalculate all data
-        await asyncio.to_thread(self._edata.process_data, False)
+        _consumptions = self._edata.data.get("consumptions", [])
+        with _clean_consumptions(_consumptions):
+            await asyncio.to_thread(self._edata.process_data, False)
 
         # give from_dt a proper default value
         from_dt = dt_util.as_utc(
@@ -609,7 +634,9 @@ class EdataCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("%s: rebuilding statistics", self.scups)
 
         # recalculate all data
-        await asyncio.to_thread(self._edata.process_data, False)
+        _consumptions = self._edata.data.get("consumptions", [])
+        with _clean_consumptions(_consumptions):
+            await asyncio.to_thread(self._edata.process_data, False)
 
         # get all statistic_ids starting with edata:<id/scups>
         all_ids = await get_db_instance(self.hass).async_add_executor_job(
@@ -1564,10 +1591,12 @@ class EdataCoordinator(DataUpdateCoordinator):
         # Only do this when we have actual data; if consumptions is empty
         # we skip the dump to avoid overwriting the on-disk history with zeros.
         _has_data = len(self._edata.data.get("consumptions", [])) > 0
-        if _has_data:
-            await asyncio.to_thread(self._edata.process_data, False)
-        else:
-            await asyncio.to_thread(self._edata.process_data, True)
+        _consumptions = self._edata.data.get("consumptions", [])
+        with _clean_consumptions(_consumptions):
+            if _has_data:
+                await asyncio.to_thread(self._edata.process_data, False)
+            else:
+                await asyncio.to_thread(self._edata.process_data, True)
         _LOGGER.warning(
             "%s: force reimport post-process consumptions=%s costs=%s maximeter=%s",
             self.scups,
@@ -1638,10 +1667,12 @@ class EdataCoordinator(DataUpdateCoordinator):
         finally:
             self._edata._must_dump = True
 
-        if len(self._edata.data.get("consumptions", [])) > 0:
-            await asyncio.to_thread(self._edata.process_data)
+        _consumptions = self._edata.data.get("consumptions", [])
+        if len(_consumptions) > 0:
+            with _clean_consumptions(_consumptions):
+                await asyncio.to_thread(self._edata.process_data)
 
-        # Repair statistics only if they have become corrupt (normal, non-forced path)
+        # Repair statistics only if they have become corrupt (normal, non-forced path) (normal, non-forced path)
         if not await self.check_statistics_integrity():
             await self.rebuild_statistics()
         else:
@@ -1721,6 +1752,8 @@ class EdataCoordinator(DataUpdateCoordinator):
             else:
                 self._edata.data[key] = []
 
-        await asyncio.to_thread(self._edata.process_cost)
+        _consumptions = self._edata.data.get("consumptions", [])
+        with _clean_consumptions(_consumptions):
+            await asyncio.to_thread(self._edata.process_cost)
 
         await self.rebuild_statistics(since, self.cost_stat_ids)
