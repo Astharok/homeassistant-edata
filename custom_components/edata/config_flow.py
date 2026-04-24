@@ -171,16 +171,22 @@ async def simulate_last_month_billing(
         _LOGGER.exception("simulate_billing: BillingProcessor() raised")
         raise
 
-    elements = len(proc.output["monthly"])
-    if elements > 1:
-        return proc.output["monthly"][-2]
-    elif elements == 1:  # noqa: RET505
-        return proc.output["monthly"][-1]
-    else:
+    monthly = proc.output.get("monthly", [])
+    for i, rec in enumerate(monthly):
         _LOGGER.warning(
-            "Skipping simulation. This is the normal if you just changed billing to PVPC"
+            "simulate_billing: [%d] %s delta_h=%d energy=%.4f power=%.4f surplus=%.4f others=%.4f total=%.4f",
+            i,
+            rec["datetime"].strftime("%m/%Y"),
+            rec.get("delta_h", 0),
+            rec.get("energy_term") or 0,
+            rec.get("power_term") or 0,
+            rec.get("surplus_term") or 0,
+            rec.get("others_term") or 0,
+            rec.get("value_eur") or 0,
         )
-        return None
+    if not monthly:
+        _LOGGER.warning("simulate_billing: no monthly records (normal after switching to PVPC)")
+    return monthly
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=const.DOMAIN):
@@ -264,7 +270,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Initialize options flow."""
         super().__init__()
         self.inputs = {}
-        self.sim = {}
+        self.sim: dict | None = {}
+        self.sim_all: list = []
+        self._confirm_apply_from: str | None = None
 
     async def async_step_init(self, user_input=None) -> FlowResult:
         """Manage the options."""
@@ -330,10 +338,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 {k: self.inputs[k] for k in user_input},
             )
             try:
-                self.sim = await simulate_last_month_billing(
+                all_months = await simulate_last_month_billing(
                     self.hass, self.config_entry, self.inputs
                 )
-                _LOGGER.warning("async_step_formulas: simulation OK sim=%s", self.sim)
+                self.sim_all = all_months or []
+                if len(self.sim_all) > 1:
+                    self.sim = self.sim_all[-2]
+                elif self.sim_all:
+                    self.sim = self.sim_all[-1]
+                else:
+                    self.sim = None
+                _LOGGER.warning(
+                    "async_step_formulas: simulation OK months=%d selected=%s",
+                    len(self.sim_all),
+                    self.sim.get("datetime") if self.sim else None,
+                )
             except Exception as e:
                 _LOGGER.exception("async_step_formulas: simulate_last_month_billing raised: %s", e)
                 raise
@@ -355,13 +374,28 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_confirm(self, user_input=None) -> FlowResult:
         """Manage the options."""
 
-        if user_input is not None and user_input["confirm"]:
-            self.inputs["update_billing_since"] = user_input["apply_from"]
-            return self.async_create_entry(title="", data=self.inputs)
+        if user_input is not None:
+            if "apply_from" in user_input:
+                self._confirm_apply_from = user_input["apply_from"]
+
+            if user_input.get(const.CONF_CONFIRM, False):
+                self.inputs["update_billing_since"] = user_input["apply_from"]
+                return self.async_create_entry(title="", data=self.inputs)
+
+            # Month selector changed: re-render with the selected month's data
+            selected = user_input.get(const.CONF_SIM_MONTH)
+            if selected and self.sim_all:
+                for rec in self.sim_all:
+                    if rec["datetime"].strftime("%Y-%m") == selected:
+                        self.sim = rec
+                        break
+
         try:
             return self.async_show_form(
                 step_id="confirm",
-                data_schema=vol.Schema(sch.OPTIONS_STEP_CONFIRM(self.sim)),
+                data_schema=vol.Schema(
+                    sch.OPTIONS_STEP_CONFIRM(self.sim, self.sim_all, self._confirm_apply_from)
+                ),
             )
         except Exception as e:
             _LOGGER.exception(e)

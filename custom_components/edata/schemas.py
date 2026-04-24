@@ -239,44 +239,77 @@ def OPTIONS_STEP_FORMULAS(
     }
 
 
-def OPTIONS_STEP_CONFIRM(sim: dict[str, float] | None) -> dict[str, typing.Any]:
-    """Build the options confirm step dict schema."""
+def OPTIONS_STEP_CONFIRM(
+    sim: dict | None,
+    sim_all: list | None = None,
+    apply_from: str | None = None,
+) -> dict[str, typing.Any]:
+    """Build the options confirm step dict schema.
 
-    confirm_schema = {
-        vol.Required(
-            const.CONF_APPLYFROM,
-        ): sel.DateTimeSelector(),
-        vol.Required(
-            const.CONF_CONFIRM,
-            default=False,
-        ): bool,
-    }
+    Shows a month selector (re-renders on change), a breakdown of all billing
+    terms for the selected month, and the apply_from / confirm fields.
+    """
+    schema: dict = {}
+
+    # Month selector — submitting the form with confirm=False re-renders with
+    # the newly selected month's data.
+    if sim_all:
+        month_options = [
+            {
+                "value": rec["datetime"].strftime("%Y-%m"),
+                "label": rec["datetime"].strftime("%m/%Y"),
+            }
+            for rec in sim_all
+        ]
+        selected_month = (
+            sim["datetime"].strftime("%Y-%m") if sim else month_options[-1]["value"]
+        )
+        schema[vol.Required(const.CONF_SIM_MONTH, default=selected_month)] = (
+            sel.SelectSelector({"options": month_options, "mode": "dropdown"})
+        )
 
     if sim is not None:
-        sim_schema = {
-            vol.Required(
-                const.CONF_MONTH,
-                default=sim["datetime"].strftime("%m/%Y"),
-            ): str,
-            vol.Required(
-                const.CONF_VALUE_EUR,
-                default=sim[const.CONF_VALUE_EUR],
-            ): vol.Coerce(float),
+        schema[vol.Required(const.CONF_DELTA_H, default=sim.get("delta_h", 0))] = (
+            vol.Coerce(int)
+        )
+        schema[
             vol.Required(
                 const.CONF_ENERGY_TERM,
-                default=sim[const.CONF_ENERGY_TERM],
-            ): vol.Coerce(float),
+                default=round(sim.get("energy_term") or 0.0, 4),
+            )
+        ] = vol.Coerce(float)
+        schema[
             vol.Required(
                 const.CONF_POWER_TERM,
-                default=sim[const.CONF_POWER_TERM],
-            ): vol.Coerce(float),
+                default=round(sim.get("power_term") or 0.0, 4),
+            )
+        ] = vol.Coerce(float)
+        schema[
+            vol.Required(
+                const.CONF_SURPLUS_TERM,
+                default=round(sim.get("surplus_term") or 0.0, 4),
+            )
+        ] = vol.Coerce(float)
+        schema[
             vol.Required(
                 const.CONF_OTHERS_TERM,
-                default=sim[const.CONF_OTHERS_TERM],
-            ): vol.Coerce(float),
-        }
-        schema = sim_schema
-        schema.update(confirm_schema)
-        return schema
+                default=round(sim.get("others_term") or 0.0, 4),
+            )
+        ] = vol.Coerce(float)
+        schema[
+            vol.Required(
+                const.CONF_VALUE_EUR,
+                default=round(sim.get("value_eur") or 0.0, 4),
+            )
+        ] = vol.Coerce(float)
 
-    return confirm_schema
+    if apply_from:
+        schema[vol.Required(const.CONF_APPLYFROM, default=apply_from)] = (
+            sel.DateTimeSelector()
+        )
+    else:
+        schema[vol.Required(const.CONF_APPLYFROM)] = sel.DateTimeSelector()
+
+    schema[vol.Required(const.CONF_CONFIRM, default=False)] = bool
+
+    return schema

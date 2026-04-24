@@ -20,10 +20,13 @@ CONF_AUTHORIZEDNIF = "authorized_nif"
 CONF_APPLYFROM = "apply_from"
 CONF_CONFIRM = "confirm"
 CONF_MONTH = "month"
+CONF_SIM_MONTH = "sim_month"
 CONF_VALUE_EUR = "value_eur"
 CONF_ENERGY_TERM = "energy_term"
 CONF_POWER_TERM = "power_term"
+CONF_SURPLUS_TERM = "surplus_term"
 CONF_OTHERS_TERM = "others_term"
+CONF_DELTA_H = "delta_h"
 
 # pricing settings
 PRICE_P1_KW_YEAR = "p1_kw_year_eur"

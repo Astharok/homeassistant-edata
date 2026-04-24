@@ -130,12 +130,13 @@
       "confirm": {
         "title": "Simulación (con impuestos)",
         "data": {
-          "month": "Mes simulado",
-          "value_eur": "Factura (€)",
+          "sim_month": "Mes a simular",
+          "delta_h": "Horas del período",
+          "value_eur": "Factura total (€)",
           "energy_term": "Término de energía (€)",
           "power_term": "Término de potencia (€)",
-          "others_term": "Otros gastos (e.g., contador, €)",
-          "surplus_term": "Retorno por generación (se resta del coste total, €)",
+          "surplus_term": "Compensación por excedentes (€, se resta)",
+          "others_term": "Otros gastos — contador, bono social (€)",
           "apply_from": "Recalcular facturas desde...",
           "confirm": "Confirmar cambios"
         }
