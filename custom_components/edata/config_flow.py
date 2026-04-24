@@ -141,9 +141,14 @@ async def simulate_last_month_billing(
     consumptions = edata_obj.data.get("consumptions", [])
     contracts = edata_obj.data.get("contracts", [])
     pvpc = edata_obj.data.get("pvpc", [])
+    _EXTRAS_KEYS = {"generation_kWh", "self_consumption_kWh", "obtain_method"}
+    consumptions_clean = [
+        {k: v for k, v in rec.items() if k not in _EXTRAS_KEYS}
+        for rec in consumptions
+    ]
     _LOGGER.warning(
         "simulate_billing: consumptions=%d contracts=%d pvpc=%d",
-        len(consumptions),
+        len(consumptions_clean),
         len(contracts),
         len(pvpc),
     )
@@ -151,7 +156,7 @@ async def simulate_last_month_billing(
     try:
         proc = BillingProcessor(
             {
-                "consumptions": consumptions,
+                "consumptions": consumptions_clean,
                 "contracts": contracts,
                 "prices": pvpc,
                 "rules": pricing_rules,
