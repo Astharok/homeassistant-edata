@@ -704,3 +704,442 @@ class EdataCardEditor extends LitElement {
 }
 
 customElements.define("edata-card-editor", EdataCardEditor);
+
+// ---------------------------------------------------------------------------
+// edata-solar-card  —  Solar energy panel + real bill breakdown
+// ---------------------------------------------------------------------------
+
+class EdataSolarCard extends LitElement {
+  constructor() {
+    super();
+    this._monthly = [];
+    this._monthIdx = -1; // -1 = most recent
+    this._charts = {};
+  }
+
+  static get properties() {
+    return { hass: {}, config: {}, _monthly: [], _monthIdx: Number };
+  }
+
+  static getConfigElement() {
+    return document.createElement("edata-solar-card-editor");
+  }
+
+  static getStubConfig() {
+    return { entity: undefined, title: "Panel Solar" };
+  }
+
+  setConfig(config) {
+    if (!config.entity?.startsWith("sensor.edata")) {
+      throw new Error("Define a valid entity (sensor.edata_XXXX)");
+    }
+    this._scups = config.entity.split("_")[1];
+    this._title = config.title || "Panel Solar";
+    this._config = config;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._fetched) {
+      this._fetched = true;
+      this._fetchData();
+    }
+  }
+
+  async _fetchData() {
+    try {
+      this._monthly = await this._hass.callWS({
+        type: "edata/consumptions/monthly",
+        scups: this._scups,
+      });
+      this._monthIdx = this._monthly.length - 1;
+      this.requestUpdate();
+      await this.updateComplete;
+      this._renderAllCharts();
+    } catch (e) {
+      console.error("edata-solar-card: fetch error", e);
+    }
+  }
+
+  _fmtMonth(isoOrDate) {
+    const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate);
+    return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }
+
+  _fmtKwh(v) {
+    if (v == null) return "—";
+    return (+v).toFixed(1) + " kWh";
+  }
+
+  _fmtEur(v) {
+    if (v == null) return "—";
+    return (+v).toFixed(2) + " €";
+  }
+
+  _navPrev() {
+    if (this._monthIdx > 0) {
+      this._monthIdx--;
+      this.requestUpdate();
+      this._scheduleCharts();
+    }
+  }
+
+  _navNext() {
+    if (this._monthIdx < this._monthly.length - 1) {
+      this._monthIdx++;
+      this.requestUpdate();
+      this._scheduleCharts();
+    }
+  }
+
+  _scheduleCharts() {
+    // Destroy existing charts so they redraw with fresh data
+    Object.values(this._charts).forEach(c => { try { c.destroy(); } catch (_) {} });
+    this._charts = {};
+    this.updateComplete.then(() => this._renderAllCharts());
+  }
+
+  get _rec() {
+    return this._monthly[this._monthIdx] || null;
+  }
+
+  // ------------------------------------------------------------------
+  // Bill breakdown helpers
+  // ------------------------------------------------------------------
+
+  _billRows(rec) {
+    if (!rec) return [];
+    const et = rec.energy_term ?? null;
+    const pt = rec.power_term ?? null;
+    const st = rec.surplus_term ?? null;
+    const ot = rec.others_term ?? null;
+    const total = rec.value_eur ?? null;
+    if (et == null && pt == null && total == null) return [];
+
+    // Back-calculate IE and IVA from totals
+    // BillingProcessor already embeds taxes; we recover subtotals for display.
+    // Approximation: we assume energy_term and power_term are the pre-IVA+IE values.
+    // Actually the formula is:  term = electricity_tax * iva_tax * base
+    // We cannot know the exact multipliers here without the rules, so we just show the
+    // computed amounts as-is from BillingProcessor (they already include taxes).
+    const subtotalTerms = (et || 0) + (pt || 0) + (ot || 0);
+    const surplusDiscount = st ? -Math.abs(st) : 0;
+    const rows = [];
+    if (pt != null) rows.push({ label: "Potencia (P1+P2)", value: pt, cls: "" });
+    if (et != null) rows.push({ label: "Energía importada", value: et, cls: "" });
+    if (st != null) rows.push({ label: "Compensación excedentes", value: surplusDiscount, cls: "surplus" });
+    if (ot != null) rows.push({ label: "Alquiler contador", value: ot, cls: "" });
+    if (total != null) rows.push({ label: "TOTAL FACTURA", value: total, cls: "total" });
+    return rows;
+  }
+
+  _solarSaving(rec) {
+    if (!rec) return null;
+    // Saving ≈ energy_term × (self_consumption / value_kWh) + surplus_term
+    const sc = rec.self_consumption_kWh || 0;
+    const imp = rec.value_kWh || 0;
+    const et = rec.energy_term;
+    const st = rec.surplus_term;
+    if (!et || !imp) return null;
+    const avgRate = et / imp;
+    return sc * avgRate + Math.abs(st || 0);
+  }
+
+  // ------------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------------
+
+  render() {
+    if (!this._monthly.length) {
+      return html`<ha-card><div style="padding:16px;color:var(--secondary-text-color)">Cargando datos solares…</div></ha-card>`;
+    }
+
+    const rec = this._rec;
+    const monthLabel = rec ? this._fmtMonth(rec.datetime) : "";
+    const hasPrev = this._monthIdx > 0;
+    const hasNext = this._monthIdx < this._monthly.length - 1;
+
+    const imported = rec?.value_kWh ?? 0;
+    const surplus = rec?.surplus_kWh ?? 0;
+    const generation = rec?.generation_kWh ?? 0;
+    const selfCons = rec?.self_consumption_kWh ?? 0;
+    const totalHouse = imported + selfCons;
+
+    const billRows = this._billRows(rec);
+    const saving = this._solarSaving(rec);
+
+    return html`
+      <style>
+        :host { display: block; }
+        .card-header { padding: 16px 16px 0; font-size: 16px; font-weight: 500; color: var(--secondary-text-color); }
+        .nav-row { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px 16px; }
+        .nav-btn { background: none; border: none; cursor: pointer; color: var(--primary-text-color); font-size: 20px; padding: 4px 10px; border-radius: 50%; }
+        .nav-btn:disabled { opacity: 0.3; cursor: default; }
+        .month-label { font-size: 15px; font-weight: 500; min-width: 160px; text-align: center; }
+        .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 8px 16px; }
+        .kpi-box { background: var(--secondary-background-color); border-radius: 8px; padding: 8px; text-align: center; }
+        .kpi-val { font-size: 16px; font-weight: bold; }
+        .kpi-lbl { font-size: 11px; color: var(--secondary-text-color); margin-top: 2px; }
+        .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 16px; }
+        .donut-box { background: var(--secondary-background-color); border-radius: 8px; padding: 8px; }
+        .donut-title { font-size: 12px; color: var(--secondary-text-color); text-align: center; margin-bottom: 4px; }
+        .bill-section { padding: 8px 16px; }
+        .bill-title { font-size: 13px; font-weight: 500; color: var(--secondary-text-color); margin-bottom: 6px; }
+        .bill-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .bill-table td { padding: 4px 6px; }
+        .bill-table td:last-child { text-align: right; font-weight: 500; }
+        .bill-row-total td { border-top: 1px solid var(--divider-color); font-weight: bold; font-size: 14px; padding-top: 6px; }
+        .bill-row-surplus td { color: #4caf50; }
+        .saving-chip { display: inline-block; background: #1b5e20; color: #a5d6a7; border-radius: 16px; padding: 4px 12px; font-size: 12px; margin-left: 8px; }
+        .history-section { padding: 8px 16px 16px; }
+        .history-title { font-size: 12px; color: var(--secondary-text-color); margin-bottom: 4px; }
+        #donut-origin, #donut-dest, #hist-kwh, #hist-eur { width: 100%; }
+        .no-solar { color: var(--secondary-text-color); font-size: 12px; text-align: center; padding: 8px; }
+      </style>
+
+      <ha-card>
+        <div class="card-header">${this._title}</div>
+
+        <!-- Month navigator -->
+        <div class="nav-row">
+          <button class="nav-btn" ?disabled=${!hasPrev} @click=${this._navPrev}>◀</button>
+          <span class="month-label">${monthLabel}</span>
+          <button class="nav-btn" ?disabled=${!hasNext} @click=${this._navNext}>▶</button>
+        </div>
+
+        <!-- KPI chips -->
+        <div class="kpi-row">
+          <div class="kpi-box">
+            <div class="kpi-val">${(+imported).toFixed(1)}</div>
+            <div class="kpi-lbl">Importado kWh</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-val">${generation > 0 ? (+generation).toFixed(1) : "—"}</div>
+            <div class="kpi-lbl">Producido kWh</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-val">${selfCons > 0 ? (+selfCons).toFixed(1) : "—"}</div>
+            <div class="kpi-lbl">Autoconsumo kWh</div>
+          </div>
+          <div class="kpi-box">
+            <div class="kpi-val">${(+surplus).toFixed(1)}</div>
+            <div class="kpi-lbl">Vertido kWh</div>
+          </div>
+        </div>
+
+        <!-- Donut charts -->
+        ${generation > 0 ? html`
+        <div class="charts-row">
+          <div class="donut-box">
+            <div class="donut-title">Origen del consumo</div>
+            <div id="donut-origin"></div>
+          </div>
+          <div class="donut-box">
+            <div class="donut-title">Destino de la producción</div>
+            <div id="donut-dest"></div>
+          </div>
+        </div>` : html`
+        <div style="padding:8px 16px">
+          <div class="no-solar">Sin datos solares para este mes (sidecar aún vacío o mes sin generación)</div>
+        </div>`}
+
+        <!-- Bill breakdown -->
+        ${billRows.length ? html`
+        <div class="bill-section">
+          <div class="bill-title">
+            Factura estimada
+            ${saving != null ? html`<span class="saving-chip">☀ Ahorro solar: ${saving.toFixed(2)} €</span>` : ""}
+          </div>
+          <table class="bill-table">
+            ${billRows.map(row => html`
+              <tr class="${row.cls === "total" ? "bill-row-total" : row.cls === "surplus" ? "bill-row-surplus" : ""}">
+                <td>${row.label}</td>
+                <td>${this._fmtEur(row.value)}</td>
+              </tr>
+            `)}
+          </table>
+        </div>` : ""}
+
+        <!-- Historical charts -->
+        <div class="history-section">
+          <div class="history-title">Histórico mensual — energía (kWh)</div>
+          <div id="hist-kwh"></div>
+          ${billRows.length ? html`
+          <div class="history-title" style="margin-top:12px">Histórico mensual — factura (€)</div>
+          <div id="hist-eur"></div>` : ""}
+        </div>
+      </ha-card>
+    `;
+  }
+
+  // ------------------------------------------------------------------
+  // ApexCharts rendering
+  // ------------------------------------------------------------------
+
+  async _renderAllCharts() {
+    await this.updateComplete;
+    const root = this.shadowRoot;
+    const rec = this._rec;
+    if (!rec) return;
+
+    const imported = rec.value_kWh || 0;
+    const selfCons = rec.self_consumption_kWh || 0;
+    const surplus = rec.surplus_kWh || 0;
+    const generation = rec.generation_kWh || 0;
+    const totalHouse = imported + selfCons;
+
+    const isDark = this._hass?.themes?.darkMode ?? false;
+    const theme = isDark ? "dark" : "light";
+
+    const baseOpts = {
+      theme: { mode: theme },
+      chart: { background: "transparent", toolbar: { show: false }, animations: { enabled: false } },
+    };
+
+    // --- Donut 1: origin of consumption ---
+    const donutOriginEl = root.querySelector("#donut-origin");
+    if (donutOriginEl && generation > 0 && !this._charts["donut-origin"]) {
+      const pctImport = totalHouse > 0 ? ((imported / totalHouse) * 100).toFixed(1) : 0;
+      const pctSelf = totalHouse > 0 ? ((selfCons / totalHouse) * 100).toFixed(1) : 0;
+      const opts = {
+        ...baseOpts,
+        chart: { ...baseOpts.chart, type: "donut", height: 180 },
+        series: [+imported, +selfCons],
+        labels: [`Red (${pctImport}%)`, `Autoconsumo (${pctSelf}%)`],
+        colors: ["#e54304", "#9ccc65"],
+        dataLabels: { enabled: true, formatter: (_, opts) => (+opts.w.globals.series[opts.seriesIndex]).toFixed(1) + " kWh" },
+        legend: { position: "bottom", fontSize: "11px" },
+        plotOptions: { pie: { donut: { size: "60%" } } },
+        tooltip: { y: { formatter: v => (+v).toFixed(1) + " kWh" } },
+      };
+      this._charts["donut-origin"] = new ApexCharts(donutOriginEl, opts);
+      this._charts["donut-origin"].render();
+    }
+
+    // --- Donut 2: destination of production ---
+    const donutDestEl = root.querySelector("#donut-dest");
+    if (donutDestEl && generation > 0 && !this._charts["donut-dest"]) {
+      const pctSelf = generation > 0 ? ((selfCons / generation) * 100).toFixed(1) : 0;
+      const pctSurp = generation > 0 ? ((surplus / generation) * 100).toFixed(1) : 0;
+      const opts = {
+        ...baseOpts,
+        chart: { ...baseOpts.chart, type: "donut", height: 180 },
+        series: [+selfCons, +surplus],
+        labels: [`Autoconsumo (${pctSelf}%)`, `Vertido (${pctSurp}%)`],
+        colors: ["#9ccc65", "#ff9e22"],
+        dataLabels: { enabled: true, formatter: (_, opts) => (+opts.w.globals.series[opts.seriesIndex]).toFixed(1) + " kWh" },
+        legend: { position: "bottom", fontSize: "11px" },
+        plotOptions: { pie: { donut: { size: "60%" } } },
+        tooltip: { y: { formatter: v => (+v).toFixed(1) + " kWh" } },
+      };
+      this._charts["donut-dest"] = new ApexCharts(donutDestEl, opts);
+      this._charts["donut-dest"].render();
+    }
+
+    // --- Historical bar chart: kWh ---
+    const histKwhEl = root.querySelector("#hist-kwh");
+    if (histKwhEl && !this._charts["hist-kwh"]) {
+      const months = this._monthly;
+      const cats = months.map(m => new Date(m.datetime).getTime());
+      const hasSolar = months.some(m => (m.generation_kWh || 0) > 0);
+
+      const seriesKwh = [
+        { name: "Importado red", data: months.map(m => +(m.value_kWh || 0).toFixed(1)) },
+        { name: "Autoconsumo", data: months.map(m => +(m.self_consumption_kWh || 0).toFixed(1)) },
+        { name: "Vertido red", data: months.map(m => +(m.surplus_kWh || 0).toFixed(1)) },
+      ];
+
+      const opts = {
+        ...baseOpts,
+        chart: { ...baseOpts.chart, type: "bar", height: 180, stacked: true },
+        series: seriesKwh,
+        colors: ["#e54304", "#9ccc65", "#ff9e22"],
+        xaxis: { type: "datetime", categories: cats, labels: { datetimeUTC: false, format: "MMM yy" } },
+        yaxis: { title: { text: "kWh" }, labels: { formatter: v => v.toFixed(0) } },
+        legend: { position: "top", fontSize: "11px" },
+        tooltip: { y: { formatter: v => v.toFixed(1) + " kWh" } },
+        dataLabels: { enabled: false },
+      };
+      this._charts["hist-kwh"] = new ApexCharts(histKwhEl, opts);
+      this._charts["hist-kwh"].render();
+    }
+
+    // --- Historical bar chart: € ---
+    const histEurEl = root.querySelector("#hist-eur");
+    if (histEurEl && !this._charts["hist-eur"]) {
+      const months = this._monthly.filter(m => m.value_eur != null);
+      if (months.length) {
+        const cats = months.map(m => new Date(m.datetime).getTime());
+        const seriesEur = [
+          { name: "Potencia", data: months.map(m => +(m.power_term || 0).toFixed(2)) },
+          { name: "Energía", data: months.map(m => +(m.energy_term || 0).toFixed(2)) },
+          { name: "Compensación excedentes", data: months.map(m => -(+(m.surplus_term || 0).toFixed(2))) },
+          { name: "Contador", data: months.map(m => +(m.others_term || 0).toFixed(2)) },
+        ];
+        const opts = {
+          ...baseOpts,
+          chart: { ...baseOpts.chart, type: "bar", height: 180, stacked: true },
+          series: seriesEur,
+          colors: ["#e54304", "#ff9e22", "#9ccc65", "#aaa"],
+          xaxis: { type: "datetime", categories: cats, labels: { datetimeUTC: false, format: "MMM yy" } },
+          yaxis: { title: { text: "€" }, labels: { formatter: v => v.toFixed(0) } },
+          legend: { position: "top", fontSize: "11px" },
+          tooltip: { y: { formatter: v => v.toFixed(2) + " €" } },
+          dataLabels: { enabled: false },
+        };
+        this._charts["hist-eur"] = new ApexCharts(histEurEl, opts);
+        this._charts["hist-eur"].render();
+      }
+    }
+  }
+
+  getCardSize() { return 5; }
+}
+
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: "edata-solar-card",
+  name: "edata Solar",
+  preview: true,
+  description: "Panel solar: diagramas de energía, factura real y histórico mensual",
+  documentationURL: "https://github.com/Astharok/homeassistant-edata",
+});
+
+customElements.define("edata-solar-card", EdataSolarCard);
+
+// Minimal editor for the solar card
+class EdataSolarCardEditor extends LitElement {
+  static get properties() { return { hass: {}, _config: {} }; }
+
+  setConfig(config) { this._config = config; }
+
+  _valueChanged(ev) {
+    const _config = { ...this._config, ...ev.detail.value };
+    this._config = _config;
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: _config }, bubbles: true, composed: true }));
+  }
+
+  render() {
+    if (!this.hass || !this._config) return html``;
+    return html`<ha-form
+      .hass=${this.hass}
+      .data=${this._config}
+      .schema=${[
+        { name: "title", selector: { text: {} } },
+        {
+          name: "entity",
+          selector: {
+            select: {
+              options: Object.keys(this.hass.states).filter(e => e.startsWith("sensor.edata_")),
+              mode: "dropdown",
+            },
+          },
+        },
+      ]}
+      @value-changed=${this._valueChanged}
+    ></ha-form>`;
+  }
+}
+
+customElements.define("edata-solar-card-editor", EdataSolarCardEditor);
+

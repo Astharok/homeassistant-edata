@@ -145,7 +145,12 @@ class EdataCoordinator(DataUpdateCoordinator):
             const.STAT_ID_SURP_KWH(self.id),
         }
 
-        self.energy_stat_ids = self.consumptions_stat_ids.union(self.surplus_stat_ids)
+        self.solar_stat_ids = {
+            const.STAT_ID_GENERATION(self.id),
+            const.STAT_ID_SELF_CONSUMPTION(self.id),
+        }
+
+        self.energy_stat_ids = self.consumptions_stat_ids.union(self.surplus_stat_ids).union(self.solar_stat_ids)
 
         self.maximeter_stat_ids = {
             const.STAT_ID_KW(self.id),
@@ -409,9 +414,9 @@ class EdataCoordinator(DataUpdateCoordinator):
             self._data[const.WS_CONSUMPTIONS_DAY] = self._edata.data[
                 "consumptions_daily_sum"
             ]
-            self._data[const.WS_CONSUMPTIONS_MONTH] = self._edata.data[
-                "consumptions_monthly_sum"
-            ]
+            monthly = list(self._edata.data["consumptions_monthly_sum"])
+            monthly = self._enrich_monthly_with_sidecar(monthly)
+            self._data[const.WS_CONSUMPTIONS_MONTH] = monthly
             self._data["ws_maximeter"] = self._edata.data["maximeter"]
 
             # update state
@@ -675,6 +680,7 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         await self._update_consumption_stats()
         await self._update_maximeter_stats()
+        await self._update_solar_stats()
         if self.billing_rules:
             # costs are only processed if billing functionality is enabled
             await self._update_cost_stats()
@@ -697,6 +703,7 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         await self._update_consumption_stats()
         await self._update_maximeter_stats()
+        await self._update_solar_stats()
 
         if self.billing_rules:
             # costs are only processed if billing functionality is enabled
@@ -900,6 +907,56 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         await self._add_statistics(new_stats)
 
+    async def _update_solar_stats(self) -> None:
+        """Build LTS statistics for solar generation and self-consumption from sidecar."""
+
+        new_stats = {x: [] for x in self.solar_stat_ids}
+
+        for stat_id in self.solar_stat_ids:
+            if stat_id not in self._last_stats_sum:
+                self._last_stats_sum[stat_id] = 0
+
+        sidecar_path = self._get_extras_sidecar_path()
+        extras: dict[str, dict] = {}
+        with contextlib.suppress(Exception):
+            with open(sidecar_path, encoding="utf8") as fh:
+                extras = json.load(fh)
+
+        if not extras:
+            _LOGGER.debug("%s: no solar sidecar data, skipping solar stats", self.scups)
+            return
+
+        gen_id = const.STAT_ID_GENERATION(self.id)
+        self_id = const.STAT_ID_SELF_CONSUMPTION(self.id)
+
+        for iso_key, fields in sorted(extras.items()):
+            try:
+                dt_entry = dt_util.as_local(datetime.fromisoformat(iso_key))
+            except (ValueError, TypeError):
+                continue
+
+            gen_val = fields.get("generation_kWh") or 0.0
+            self_val = fields.get("self_consumption_kWh") or 0.0
+
+            if gen_val > 0 and (
+                gen_id not in self._last_stats_dt
+                or dt_entry >= self._last_stats_dt[gen_id]
+            ):
+                new_stats[gen_id].append(StatisticData(start=dt_entry, state=gen_val))
+
+            if self_val > 0 and (
+                self_id not in self._last_stats_dt
+                or dt_entry >= self._last_stats_dt[self_id]
+            ):
+                new_stats[self_id].append(StatisticData(start=dt_entry, state=self_val))
+
+        for stat_id in new_stats:
+            for stat_data in new_stats[stat_id]:
+                self._last_stats_sum[stat_id] += stat_data["state"]
+                stat_data["sum"] = self._last_stats_sum[stat_id]
+
+        await self._add_statistics(new_stats)
+
     async def _update_maximeter_stats(self) -> dict[str, list[StatisticData]]:
         """Build long-term statistics for maximeter."""
 
@@ -967,6 +1024,78 @@ class EdataCoordinator(DataUpdateCoordinator):
             await self.rebuild_statistics()
         else:
             _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
+
+    def _enrich_monthly_with_sidecar(self, monthly: list) -> list:
+        """Add generation_kWh, self_consumption_kWh and cost sub-terms to monthly websocket records.
+
+        Each monthly record already has datetime, value_kWh, surplus_kWh, etc.
+        We aggregate the sidecar hourly extras by billing-cycle month and attach
+        generation_kWh and self_consumption_kWh totals to each record.
+        We also join cost_monthly_sum fields (energy_term, power_term, surplus_term,
+        others_term, value_eur) so the frontend needs only one websocket call.
+        """
+        sidecar_path = self._get_extras_sidecar_path()
+        extras: dict[str, dict] = {}
+        with contextlib.suppress(Exception):
+            with open(sidecar_path, encoding="utf8") as fh:
+                extras = json.load(fh)
+
+        # Aggregate sidecar by the same billing-cycle month key used in monthly records.
+        # Monthly records have datetime = first day of billing cycle (after cycle_start_day offset).
+        # We use the same relativedelta logic as BillingProcessor: shift back cycle_start_day-1 days.
+        cycle_offset = 0
+        if self.billing_rules and hasattr(self.billing_rules, "__getitem__"):
+            with contextlib.suppress(Exception):
+                cycle_offset = self.billing_rules["cycle_start_day"] - 1
+
+        agg: dict[str, dict[str, float]] = {}
+        for iso_key, fields in extras.items():
+            try:
+                dt_entry = datetime.fromisoformat(iso_key)
+            except (ValueError, TypeError):
+                continue
+            day = dt_entry.replace(hour=0, minute=0, second=0, microsecond=0)
+            month_key = (day - timedelta(days=cycle_offset)).replace(day=1).isoformat()
+            if month_key not in agg:
+                agg[month_key] = {"generation_kWh": 0.0, "self_consumption_kWh": 0.0}
+            agg[month_key]["generation_kWh"] += fields.get("generation_kWh") or 0.0
+            agg[month_key]["self_consumption_kWh"] += fields.get("self_consumption_kWh") or 0.0
+
+        # Build cost monthly lookup keyed by month ISO datetime string
+        cost_by_month: dict[str, dict] = {}
+        for cost_rec in self._edata.data.get("cost_monthly_sum", []):
+            rec_dt = cost_rec.get("datetime")
+            if rec_dt is None:
+                continue
+            cost_by_month[rec_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()] = cost_rec
+
+        if not agg and not cost_by_month:
+            return monthly
+
+        enriched = []
+        for record in monthly:
+            rec = dict(record)
+            rec_dt = rec.get("datetime")
+            if rec_dt is not None:
+                month_key = (
+                    rec_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                    .isoformat()
+                )
+                if month_key in agg:
+                    rec["generation_kWh"] = round(agg[month_key]["generation_kWh"], 3)
+                    rec["self_consumption_kWh"] = round(agg[month_key]["self_consumption_kWh"], 3)
+                else:
+                    rec["generation_kWh"] = 0.0
+                    rec["self_consumption_kWh"] = 0.0
+                if month_key in cost_by_month:
+                    c = cost_by_month[month_key]
+                    rec["energy_term"] = round(c.get("energy_term") or 0.0, 4)
+                    rec["power_term"] = round(c.get("power_term") or 0.0, 4)
+                    rec["surplus_term"] = round(c.get("surplus_term") or 0.0, 4)
+                    rec["others_term"] = round(c.get("others_term") or 0.0, 4)
+                    rec["value_eur"] = round(c.get("value_eur") or 0.0, 4)
+            enriched.append(rec)
+        return enriched
 
     def _get_cached_period_start(self) -> datetime:
         """Return the first datetime of the currently cached period."""
@@ -1434,7 +1563,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             len(self._edata.data.get("maximeter", [])),
         )
 
-        force_stat_ids = set(self.energy_stat_ids).union(self.maximeter_stat_ids)
+        force_stat_ids = set(self.energy_stat_ids).union(self.maximeter_stat_ids).union(self.solar_stat_ids)
         if self.billing_rules:
             force_stat_ids.update(self.cost_stat_ids)
 

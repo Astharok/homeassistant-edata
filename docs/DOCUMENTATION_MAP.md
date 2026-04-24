@@ -22,6 +22,7 @@ Este documento es el índice operativo de la documentación del proyecto. Su fun
 | `docs/FORK_SURPLUS_STATUS.md` | Estado actual del fork orientado a vertido/excedentes, huecos detectados y siguiente plan técnico. | Cuando trabajes en energía vertida, facturación de excedentes o tu estrategia de fork propio. |
 | `docs/FORK_OPERATION.md` | Procedimientos operativos del fork: migración en HACS, trabajo en `main` y sincronización con upstream. | Cuando necesites instalar tu fork en Home Assistant o actualizarlo con cambios del repositorio original. |
 | `docs/FINALIZE_MAIN_BRANCH.md` | Paso final para eliminar `dev` cuando `main` ya existe en remoto. | Cuando GitHub bloquee el borrado de `dev` por ser rama por defecto. |
+| `docs/ROADMAP_SOLAR_DASHBOARD.md` | Plan detallado: estadísticas LTS de generación/autoconsumo + panel de facturación completa. | Cuando se implemente el bloque solar o el panel Lovelace de facturación. |
 | `.github/copilot-instructions.md` | Reglas operativas para agentes y mantenimiento progresivo de la documentación. | Siempre al iniciar una tarea automatizada en el repositorio. |
 
 ## Guía de consulta selectiva por tarea

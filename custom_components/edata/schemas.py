@@ -178,8 +178,7 @@ def OPTIONS_STEP_FORMULAS(
 ) -> dict[str, typing.Any]:
     """Build the options formulas step dict schema."""
 
-    def tokenize(expr):
-        return "{{ " + expr + " }}"
+    _text = sel.TextSelector(config=sel.TextSelectorConfig(multiline=False))
 
     if is_pvpc:
         def_formulas = const.DEFAULT_PVPC_BILLING_FORMULAS
@@ -192,59 +191,51 @@ def OPTIONS_STEP_FORMULAS(
         return {
             vol.Required(
                 const.BILLING_ENERGY_FORMULA,
-                default=tokenize(def_formulas[const.BILLING_ENERGY_FORMULA]),
-            ): sel.TemplateSelector(),
+                default=def_formulas[const.BILLING_ENERGY_FORMULA],
+            ): _text,
             vol.Required(
                 const.BILLING_POWER_FORMULA,
-                default=tokenize(def_formulas[const.BILLING_POWER_FORMULA]),
-            ): sel.TemplateSelector(),
+                default=def_formulas[const.BILLING_POWER_FORMULA],
+            ): _text,
             vol.Required(
                 const.BILLING_OTHERS_FORMULA,
-                default=tokenize(def_formulas[const.BILLING_OTHERS_FORMULA]),
-            ): sel.TemplateSelector(),
+                default=def_formulas[const.BILLING_OTHERS_FORMULA],
+            ): _text,
             vol.Required(
                 const.BILLING_SURPLUS_FORMULA,
-                default=tokenize(def_formulas.get(const.BILLING_SURPLUS_FORMULA)),
-            ): sel.TemplateSelector(),
+                default=def_formulas.get(const.BILLING_SURPLUS_FORMULA),
+            ): _text,
         }
 
     return {
         vol.Required(
             const.BILLING_ENERGY_FORMULA,
-            default=tokenize(
-                prev_options.get(
-                    const.BILLING_ENERGY_FORMULA,
-                    def_formulas[const.BILLING_ENERGY_FORMULA],
-                )
+            default=prev_options.get(
+                const.BILLING_ENERGY_FORMULA,
+                def_formulas[const.BILLING_ENERGY_FORMULA],
             ),
-        ): sel.TemplateSelector(),
+        ): _text,
         vol.Required(
             const.BILLING_POWER_FORMULA,
-            default=tokenize(
-                prev_options.get(
-                    const.BILLING_POWER_FORMULA,
-                    def_formulas[const.BILLING_POWER_FORMULA],
-                )
+            default=prev_options.get(
+                const.BILLING_POWER_FORMULA,
+                def_formulas[const.BILLING_POWER_FORMULA],
             ),
-        ): sel.TemplateSelector(),
+        ): _text,
         vol.Required(
             const.BILLING_OTHERS_FORMULA,
-            default=tokenize(
-                prev_options.get(
-                    const.BILLING_OTHERS_FORMULA,
-                    def_formulas[const.BILLING_OTHERS_FORMULA],
-                )
+            default=prev_options.get(
+                const.BILLING_OTHERS_FORMULA,
+                def_formulas[const.BILLING_OTHERS_FORMULA],
             ),
-        ): sel.TemplateSelector(),
+        ): _text,
         vol.Required(
             const.BILLING_SURPLUS_FORMULA,
-            default=tokenize(
-                prev_options.get(
-                    const.BILLING_SURPLUS_FORMULA,
-                    def_formulas[const.BILLING_SURPLUS_FORMULA],
-                )
-            )
-        ): sel.TemplateSelector(),
+            default=prev_options.get(
+                const.BILLING_SURPLUS_FORMULA,
+                def_formulas[const.BILLING_SURPLUS_FORMULA],
+            ),
+        ): _text,
     }
 
 

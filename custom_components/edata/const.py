@@ -66,7 +66,7 @@ DEFAULT_PVPC_BILLING_FORMULAS = {
     BILLING_ENERGY_FORMULA: "electricity_tax * iva_tax * kwh_eur * kwh",
     BILLING_POWER_FORMULA: "electricity_tax * iva_tax * (p1_kw * (p1_kw_year_eur + market_kw_year_eur) + p2_kw * p2_kw_year_eur) / 365 / 24",
     BILLING_OTHERS_FORMULA: "iva_tax * meter_month_eur / 30 / 24",
-    BILLING_SURPLUS_FORMULA: "electricity_tax * iva_tax * surplus_kwh * surplus_p1_kwh_eur",
+    BILLING_SURPLUS_FORMULA: "electricity_tax * iva_tax * surplus_kwh * kwh_eur",
 }
 
 DATA_STATE = "state"
@@ -110,6 +110,10 @@ STAT_ID_P2_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_p2_energy_cost"
 STAT_ID_P3_ENERGY_EUR = lambda scups: f"{DOMAIN}:{scups}_p3_energy_cost"
 STAT_ID_SURPLUS_EUR = lambda scups: f"{DOMAIN}:{scups}_surplus_cost"
 STAT_ID_POWER_EUR = lambda scups: f"{DOMAIN}:{scups}_power_cost"
+
+# Solar generation / self-consumption LTS statistics
+STAT_ID_GENERATION = lambda scups: f"{DOMAIN}:{scups}_generation"
+STAT_ID_SELF_CONSUMPTION = lambda scups: f"{DOMAIN}:{scups}_self_consumption"
 
 # cups integrity
 CUPS_CONTROL_DIGITS = "TRWAGMYFPDXBNJZSQVHLCKE"

@@ -282,6 +282,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
 
             for key in user_input:
+                # Strip any accidental {{ }} wrapping (legacy TemplateSelector values)
                 self.inputs[key] = (
                     user_input[key]
                     .replace(J2_EXPR_TOKENS[0].strip(), "")
