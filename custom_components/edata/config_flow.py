@@ -100,7 +100,7 @@ async def simulate_last_month_billing(
 
     coordinator_id = config_entry.data["scups"].lower()
 
-    _LOGGER.warning(
+    _LOGGER.info(
         "simulate_billing: coordinator_id=%s data_keys=%s",
         coordinator_id,
         list(data.keys()),
@@ -118,6 +118,8 @@ async def simulate_last_month_billing(
             const.PRICE_P2_KWH,
             const.PRICE_P3_KWH,
             const.PRICE_SURP_P1_KWH,
+            const.PRICE_SURP_P2_KWH,
+            const.PRICE_SURP_P3_KWH,
             const.PRICE_METER_MONTH,
             const.PRICE_MARKET_KW_YEAR,
             const.PRICE_ELECTRICITY_TAX,
@@ -128,11 +130,11 @@ async def simulate_last_month_billing(
             const.BILLING_SURPLUS_FORMULA,
         )
     }
-    _LOGGER.warning("simulate_billing: pricing_rules_input=%s", pricing_rules_input)
+    _LOGGER.info("simulate_billing: pricing_rules_input=%s", pricing_rules_input)
 
     try:
         pricing_rules = PricingRules(pricing_rules_input)
-        _LOGGER.warning("simulate_billing: PricingRules OK")
+        _LOGGER.debug("simulate_billing: PricingRules OK")
     except Exception:
         _LOGGER.exception("simulate_billing: PricingRules() raised")
         raise
@@ -146,7 +148,7 @@ async def simulate_last_month_billing(
         {k: v for k, v in rec.items() if k not in _EXTRAS_KEYS}
         for rec in consumptions
     ]
-    _LOGGER.warning(
+    _LOGGER.info(
         "simulate_billing: consumptions=%d contracts=%d pvpc=%d",
         len(consumptions_clean),
         len(contracts),
@@ -163,7 +165,7 @@ async def simulate_last_month_billing(
         proc = await hass.async_add_executor_job(
             BillingProcessor, _bp_input
         )
-        _LOGGER.warning(
+        _LOGGER.debug(
             "simulate_billing: BillingProcessor OK monthly=%d",
             len(proc.output.get("monthly", [])),
         )
@@ -186,7 +188,7 @@ async def simulate_last_month_billing(
         except Exception:
             _LOGGER.warning("simulate_billing: could not read sidecar, savings_term will be 0")
 
-    _LOGGER.warning(
+    _LOGGER.info(
         "simulate_billing: sidecar entries=%d (coordinator available=%s)",
         len(_sidecar_extras),
         _coordinator is not None,
@@ -230,7 +232,7 @@ async def simulate_last_month_billing(
     try:
         proc_sc = await hass.async_add_executor_job(BillingProcessor, _bp_sc_input)
         monthly_sc = proc_sc.output.get("monthly", [])
-        _LOGGER.warning("simulate_billing: BillingProcessor (sc) OK monthly=%d", len(monthly_sc))
+        _LOGGER.debug("simulate_billing: BillingProcessor (sc) OK monthly=%d", len(monthly_sc))
     except Exception:
         _LOGGER.exception("simulate_billing: BillingProcessor (sc) raised — savings_term will be 0")
 
@@ -246,7 +248,7 @@ async def simulate_last_month_billing(
         )
 
     for i, rec in enumerate(monthly):
-        _LOGGER.warning(
+        _LOGGER.info(
             "simulate_billing: [%d] %s delta_h=%d energy=%.4f power=%.4f surplus=%.4f others=%.4f savings=%.4f total=%.4f",
             i,
             rec["datetime"].strftime("%m/%Y"),

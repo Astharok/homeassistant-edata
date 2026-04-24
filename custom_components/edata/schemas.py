@@ -168,6 +168,22 @@ def OPTIONS_STEP_COSTS(
                     min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
                 )
             ),
+            vol.Required(
+                const.PRICE_SURP_P2_KWH,
+                default=prev_options.get(const.PRICE_SURP_P2_KWH, const.DEFAULT_PRICE_SURPLUS_KWH),
+            ): sel.NumberSelector(
+                config=sel.NumberSelectorConfig(
+                    min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Required(
+                const.PRICE_SURP_P3_KWH,
+                default=prev_options.get(const.PRICE_SURP_P3_KWH, const.DEFAULT_PRICE_SURPLUS_KWH),
+            ): sel.NumberSelector(
+                config=sel.NumberSelectorConfig(
+                    min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
+                )
+            ),
         })
 
     return schema

@@ -206,6 +206,10 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._full_import_calls = 0
         self._full_import_last_run: datetime | None = None
 
+        # Data-integrity signals surfaced to the user via persistent_notification.
+        self._sidecar_corruption_path: str | None = None
+        self._datadis_failure_count = 0
+
         hass.data[const.DOMAIN][self.id]["dt_last"] = self._last_stats_dt
 
         # Just the preamble of the statistics
@@ -245,7 +249,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             hour=0, minute=0, second=0, microsecond=0
         ) - timedelta(minutes=1)
 
-        _LOGGER.warning(
+        _LOGGER.info(
             "%s: update requested cache_months=%s from=%s to=%s",
             self.scups,
             self.cache_months,
@@ -261,10 +265,10 @@ class EdataCoordinator(DataUpdateCoordinator):
             "pvpc": len(self._edata.data.get("pvpc", [])),
             "cost_hourly_sum": len(self._edata.data.get("cost_hourly_sum", [])),
         }
-        _LOGGER.warning("%s: update pre-counts %s", self.scups, pre_counts)
+        _LOGGER.info("%s: update pre-counts %s", self.scups, pre_counts)
 
         if isinstance(self._edata.last_update, dict):
-            _LOGGER.warning(
+            _LOGGER.info(
                 "%s: update last_update pre supplies=%s contracts=%s consumptions=%s maximeter=%s pvpc=%s",
                 self.scups,
                 self._edata.last_update.get("supplies"),
@@ -274,7 +278,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                 self._edata.last_update.get("pvpc"),
             )
 
-        _LOGGER.warning(
+        _LOGGER.info(
             "%s: update invoking edata helper cups=%s authorized_nif=%s billing=%s",
             self.scups,
             self.scups,
@@ -286,15 +290,21 @@ class EdataCoordinator(DataUpdateCoordinator):
         # e-data's async wrapper can return before the underlying update is done.
         # _must_dump=False: we handle the dump ourselves after enrichment.
         self._edata._must_dump = False
+        update_result = False
+        update_exc: Exception | None = None
         try:
-            update_result = await asyncio.to_thread(
-                self._edata.update,
-                date_from,
-                date_to,
-            )
+            try:
+                update_result = await asyncio.to_thread(
+                    self._edata.update,
+                    date_from,
+                    date_to,
+                )
+            except Exception as err:  # pylint: disable=broad-except
+                update_exc = err
+                _LOGGER.exception("%s: edata helper raised", self.scups)
         finally:
             self._edata._must_dump = True
-        _LOGGER.warning("%s: update helper returned %s", self.scups, update_result)
+        _LOGGER.info("%s: update helper returned %s", self.scups, update_result)
 
         post_counts = {
             "supplies": len(self._edata.data.get("supplies", [])),
@@ -304,10 +314,10 @@ class EdataCoordinator(DataUpdateCoordinator):
             "pvpc": len(self._edata.data.get("pvpc", [])),
             "cost_hourly_sum": len(self._edata.data.get("cost_hourly_sum", [])),
         }
-        _LOGGER.warning("%s: update post-counts %s", self.scups, post_counts)
+        _LOGGER.info("%s: update post-counts %s", self.scups, post_counts)
 
         if isinstance(self._edata.last_update, dict):
-            _LOGGER.warning(
+            _LOGGER.info(
                 "%s: update last_update post supplies=%s contracts=%s consumptions=%s maximeter=%s pvpc=%s",
                 self.scups,
                 self._edata.last_update.get("supplies"),
@@ -319,7 +329,7 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         if self._edata.data.get("supplies"):
             _supply_cups = self._edata.data["supplies"][0].get("cups", "")
-            _LOGGER.warning(
+            _LOGGER.info(
                 "%s: update supplies sample cups=...%s date_start=%s date_end=%s",
                 self.scups,
                 _supply_cups[-4:] if _supply_cups else "?",
@@ -330,7 +340,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("%s: update got zero supplies", self.scups)
 
         if self._edata.data.get("contracts"):
-            _LOGGER.warning(
+            _LOGGER.info(
                 "%s: update contracts sample marketer=%s date_start=%s date_end=%s",
                 self.scups,
                 self._edata.data["contracts"][0].get("marketer"),
@@ -343,7 +353,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         if self._edata.data.get("consumptions"):
             first = self._edata.data["consumptions"][0]
             last = self._edata.data["consumptions"][-1]
-            _LOGGER.warning(
+            _LOGGER.info(
                 "%s: update consumptions sample first=%s last=%s first_value=%s first_surplus=%s",
                 self.scups,
                 first.get("datetime"),
@@ -354,6 +364,21 @@ class EdataCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.warning("%s: update got zero consumptions", self.scups)
         self._log_refresh_summary()
+
+        # Track Datadis failures to alert the user if repeated.
+        if update_exc is not None or (
+            not update_result and post_counts["consumptions"] == 0
+        ):
+            self._datadis_failure_count += 1
+            if self._datadis_failure_count >= 3:
+                self._notify_datadis_failure(update_exc)
+        else:
+            if self._datadis_failure_count > 0:
+                # Recovered — clear any previous notification.
+                persistent_notification.async_dismiss(
+                    self.hass, f"edata_datadis_failure_{self.id}"
+                )
+            self._datadis_failure_count = 0
 
         if post_counts["consumptions"] > 0:
             # 1. Dump clean data first — edata's EdataSchema (voluptuous) uses
@@ -375,6 +400,12 @@ class EdataCoordinator(DataUpdateCoordinator):
             #    disk-cache files have already expired).
             await self.hass.async_add_executor_job(self._apply_extras_sidecar)
             await self.hass.async_add_executor_job(self._rotate_storage_backup)
+
+            # Surface sidecar corruption (detected during any read above) to the
+            # user. The sidecar was already quarantined as .corrupt-<ts>.
+            if self._sidecar_corruption_path:
+                self._notify_sidecar_corruption(self._sidecar_corruption_path)
+                self._sidecar_corruption_path = None
         else:
             _LOGGER.warning(
                 "%s: skipping dump — consumptions still zero after update",
@@ -986,13 +1017,38 @@ class EdataCoordinator(DataUpdateCoordinator):
         await self._add_statistics(new_stats)
 
     def _read_sidecar_sync(self) -> dict:
-        """Read the extras sidecar JSON synchronously (safe to run in executor)."""
+        """Read the extras sidecar JSON synchronously (safe to run in executor).
+
+        On corruption (JSONDecodeError), rename the broken file to
+        ``edata_<cups>_extras.corrupt-<ts>.json`` and flag
+        ``self._sidecar_corruption_path`` so an async caller can surface a
+        persistent_notification to the user. Missing file is normal (returns {}).
+        """
         sidecar_path = self._get_extras_sidecar_path()
-        extras: dict[str, dict] = {}
-        with contextlib.suppress(Exception):
+        if not os.path.exists(sidecar_path):
+            return {}
+        try:
             with open(sidecar_path, encoding="utf8") as fh:
-                extras = json.load(fh)
-        return extras
+                data = json.load(fh)
+                if not isinstance(data, dict):
+                    raise json.JSONDecodeError("sidecar root is not a dict", "", 0)
+                return data
+        except (json.JSONDecodeError, ValueError) as err:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            corrupt_path = f"{sidecar_path}.corrupt-{ts}"
+            with contextlib.suppress(OSError):
+                os.replace(sidecar_path, corrupt_path)
+            _LOGGER.error(
+                "%s: sidecar corrupted, renamed to %s (%s)",
+                self.scups,
+                corrupt_path,
+                err,
+            )
+            self._sidecar_corruption_path = corrupt_path
+            return {}
+        except OSError as err:
+            _LOGGER.warning("%s: sidecar unreadable: %s", self.scups, err)
+            return {}
 
     async def _update_solar_stats(self) -> None:
         """Build LTS statistics for solar generation and self-consumption from sidecar."""
@@ -1242,12 +1298,41 @@ class EdataCoordinator(DataUpdateCoordinator):
             notification_id=f"edata_force_reimport_{self.id}",
         )
 
+    def _notify_datadis_failure(self, err: Exception | None) -> None:
+        """Create a persistent notification after repeated Datadis failures."""
+        reason = f" ({err})" if err is not None else ""
+        persistent_notification.async_create(
+            self.hass,
+            (
+                f"La sincronización con Datadis ha fallado {self._datadis_failure_count} "
+                f"veces consecutivas{reason}. Revisa credenciales, conectividad o el estado "
+                "del servicio de Datadis. Los datos ya descargados se mantienen intactos."
+            ),
+            title="edata: fallo persistente con Datadis",
+            notification_id=f"edata_datadis_failure_{self.id}",
+        )
+
+    def _notify_sidecar_corruption(self, corrupt_path: str) -> None:
+        """Alert the user when the extras sidecar had to be quarantined."""
+        persistent_notification.async_create(
+            self.hass,
+            (
+                "El fichero lateral de extras solares (generation_kWh, "
+                "self_consumption_kWh) estaba corrupto y se ha movido a "
+                f"`{corrupt_path}`. Se reconstruirá automáticamente desde la caché "
+                "de Datadis en los próximos ciclos. Si persiste, pulsa "
+                "'Import all data' para reimportar el histórico completo."
+            ),
+            title="edata: sidecar solar corrupto",
+            notification_id=f"edata_sidecar_corrupt_{self.id}",
+        )
+
     def _force_clear_datadis_cache(self) -> None:
         """Clear Datadis connector disk cache to bypass 24h request cache."""
 
         cache_dir = getattr(getattr(self._edata, "datadis_api", None), "_recent_cache_dir", None)
         if cache_dir and os.path.isdir(cache_dir):
-            _LOGGER.warning(
+            _LOGGER.info(
                 "%s: clearing datadis connector disk cache at %s",
                 self.scups,
                 cache_dir,
@@ -1348,16 +1433,23 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         # Merge new extras into sidecar (accumulative across update cycles)
         sidecar_path = self._get_extras_sidecar_path()
-        existing_extras: dict[str, dict] = {}
-        with contextlib.suppress(Exception):
-            with open(sidecar_path, encoding="utf8") as fh:
-                existing_extras = json.load(fh)
+        existing_extras: dict[str, dict] = self._read_sidecar_sync()
         for dt_key, fields in extra.items():
             existing_extras[dt_key.isoformat()] = fields
-        with contextlib.suppress(Exception):
+        # Atomic write: write to temp then os.replace so HA kills mid-write
+        # never leave a truncated/corrupt sidecar.
+        try:
             os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
-            with open(sidecar_path, "w", encoding="utf8") as fh:
+            tmp_path = f"{sidecar_path}.tmp"
+            with open(tmp_path, "w", encoding="utf8") as fh:
                 json.dump(existing_extras, fh)
+            os.replace(tmp_path, sidecar_path)
+        except OSError as err:
+            _LOGGER.error(
+                "%s: failed to persist sidecar atomically: %s — previous sidecar preserved",
+                self.scups,
+                err,
+            )
 
         # Apply to in-memory consumptions (matching by datetime object)
         enriched = 0
@@ -1385,11 +1477,7 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         Returns the number of in-memory entries that received extra fields.
         """
-        sidecar_path = self._get_extras_sidecar_path()
-        extras: dict[str, dict] = {}
-        with contextlib.suppress(Exception):
-            with open(sidecar_path, encoding="utf8") as fh:
-                extras = json.load(fh)
+        extras: dict[str, dict] = self._read_sidecar_sync()
 
         if not extras:
             return 0
@@ -1444,8 +1532,27 @@ class EdataCoordinator(DataUpdateCoordinator):
         today_str = datetime.today().strftime("%Y-%m-%d")
         dst = os.path.join(backups_dir, f"edata_{self.cups.lower()}_{today_str}.json")
 
-        shutil.copy2(src, dst)
-        _LOGGER.warning(
+        try:
+            shutil.copy2(src, dst)
+        except OSError as err:
+            _LOGGER.error(
+                "%s: backup rotation FAILED (%s) — check disk space in %s",
+                self.scups,
+                err,
+                backups_dir,
+            )
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"No se ha podido rotar el backup diario de edata ({err}). "
+                    "Revisa el espacio libre o los permisos del directorio de "
+                    f"almacenamiento: {backups_dir}"
+                ),
+                title="edata: fallo al crear backup diario",
+                notification_id=f"edata_backup_fail_{self.id}",
+            )
+            return
+        _LOGGER.info(
             "%s: storage backup rotated → %s (consumptions=%d)",
             self.scups,
             dst,
@@ -1461,7 +1568,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                 bdate = datetime.strptime(date_part, "%Y-%m-%d")
                 if bdate < cutoff:
                     os.remove(bfile)
-                    _LOGGER.warning("%s: pruned old backup %s", self.scups, bname)
+                    _LOGGER.info("%s: pruned old backup %s", self.scups, bname)
             except (ValueError, OSError):
                 pass
 

@@ -49,9 +49,14 @@ Se definen precios base y, según el caso:
 - precios fijos P1/P2/P3
 - compensación de excedentes
 
-Observación importante: aunque `const.py` declara precios `surplus_p1_kwh_eur`, `surplus_p2_kwh_eur` y `surplus_p3_kwh_eur`, `schemas.py` sólo añade el campo P1 al formulario de costes cuando `surplus` está activado. Esto sugiere soporte aún no completado en la UI.
+`schemas.py` expone las compensaciones `surplus_p1_kwh_eur`, `surplus_p2_kwh_eur`
+y `surplus_p3_kwh_eur` cuando `surplus` está activado. `__init__.py` y
+`config_flow.py` empaquetan las tres en `pricing_rules` para que
+`BillingProcessor` aplique la tarifa correcta en cada periodo.
 
-Además, la UI de opciones debe tratar la compensación de excedentes como no soportada en modo PVPC. El flujo actual del fork ya oculta el precio de excedente cuando `pvpc` está activado, para no presentar una configuración que el backend no soporta de forma coherente.
+La UI de opciones trata la compensación de excedentes como no soportada en modo
+PVPC: el bloque de compensación queda oculto cuando `pvpc` está activado para no
+presentar una configuración que el backend no soporta de forma coherente.
 
 ### Paso `formulas`
 

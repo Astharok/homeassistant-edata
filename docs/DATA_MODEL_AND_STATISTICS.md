@@ -34,6 +34,12 @@ El recorrido principal de datos es:
 - Formato: `{"ISO_datetime_str": {"generation_kWh": float, "self_consumption_kWh": float, "obtain_method": str}}`
 - Acumulativo: cada ciclo añade entradas nuevas sin borrar las antiguas.
 - Se lee siempre en un executor (sin bloquear el event loop).
+- **Escritura atómica**: se escribe a `<path>.tmp` y luego `os.replace`, de modo
+  que un kill de HA mid-write no puede corromper el fichero.
+- **Detección de corrupción**: si `json.load` falla, el fichero se renombra a
+  `edata_<cups>_extras.corrupt-<YYYYMMDD-HHMMSS>.json` para forensic y se
+  notifica al usuario vía `persistent_notification`. El siguiente ciclo
+  reconstruye el sidecar desde la caché fresca de Datadis.
 
 ### Backups rotativos (coordinador)
 
@@ -42,6 +48,18 @@ El recorrido principal de datos es:
 - Retención: 30 días.
 - Usado por `_async_force_reimport_period` cuando hay snapshot disponible,
   evitando llamadas adicionales a Datadis.
+- Si `shutil.copy2` falla (disco lleno, permisos), se crea un
+  `persistent_notification` con la ruta del directorio y se cancela la rotación
+  sin bloquear el ciclo de actualización.
+
+## Alertas al usuario (persistent_notification)
+
+| Situación | Notification ID |
+|---|---|
+| Recarga forzada en ejecución (botones `import_all_data`, `force_surplus_reimport`) | `edata_force_reimport_<scups>` |
+| Fallo persistente con Datadis (≥3 ciclos consecutivos con error o sin datos) | `edata_datadis_failure_<scups>` (se limpia al recuperar) |
+| Sidecar solar corrupto y puesto en cuarentena | `edata_sidecar_corrupt_<scups>` |
+| Fallo al rotar backup diario (disco lleno / permisos) | `edata_backup_fail_<scups>` |
 
 ## Ventana de caché
 

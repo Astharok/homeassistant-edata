@@ -10,16 +10,22 @@ panel Lovelace de dashboard energético.
 
 ---
 
-## Estado actual (2026-04-24)
+## Estado actual (2026-04-24 — auditoría de robustez)
 
 ### ✅ Completado en esta rama
 
 | Área | Implementación |
 |---|---|
 | Sidecar `generation_kWh` + `self_consumption_kWh` | Persistencia acumulativa, aplicación en memoria cada ciclo |
+| **Sidecar con escritura atómica** | `tempfile + os.replace` garantiza que un kill de HA mid-write no corrompe el fichero |
+| **Detección de sidecar corrupto** | Si `json.load` falla, fichero se renombra a `.corrupt-<ts>.json` y se notifica al usuario vía `persistent_notification` |
+| **Alerta de fallo persistente en Datadis** | Tras 3 ciclos consecutivos con fallo, se crea `persistent_notification` (se limpia automáticamente al recuperar) |
+| **Alerta de fallo de backup** | Si `shutil.copy2` falla en la rotación diaria, se avisa al usuario con la ruta del directorio |
 | LTS stats `edata:<scups>_generation` / `_self_consumption` | `StatisticMeanType.NONE`, `has_sum=True`, `unit_class="energy"` |
-| Enriquecimiento websocket mensual | `_enrich_monthly_with_sidecar()` añade solar + terms de coste |
-| Panel `edata-solar-card` | Donuts, tabla factura, histórico, chip ahorro |
+| Enriquecimiento websocket mensual | `_enrich_monthly_with_sidecar()` añade solar + terms de coste + `savings_term` por ciclo de facturación |
+| Panel `edata-solar-card` | KPIs, tabla P1/P2/P3, donuts, tabla de factura, ahorro autoconsumo, históricos |
+| **Panel con re-fetch automático** | La tarjeta observa el estado del sensor edata y re-fetcha al cambiar, evitando quedarse en "Cargando" |
+| **Compensación excedentes P1/P2/P3** | Cerrado Hueco 1: `OPTIONS_STEP_COSTS` expone P1, P2 y P3; `pricing_rules` los empaqueta en `__init__.py` y en la simulación |
 | Fórmula surplus PVPC corregida | Usaba `surplus_p1_kwh_eur` (None → 0); ahora usa `kwh_eur` (precio spot) |
 | Fix `TemplateSelector` → `TextSelector` | Evitaba UndefinedError en fórmulas al guardar |
 | Fix `PREVENT_EXTRA` generalizado | `_clean_consumptions()` context manager en todos los call sites |
@@ -27,28 +33,37 @@ panel Lovelace de dashboard energético.
 | Fix `KeyError` en `options_update_listener` | Al desactivar billing, `update_billing_since` ausente → crash; corregido con `.get()` |
 | Fix `UnboundLocalError` en `_update_cost_stats` | Si `get_pvpc_tariff` devuelve valor inesperado → variables sin asignar; corregido con `else: continue` |
 | Fix `from_now` ignorado en `ws_get_cost` | El parámetro se calculaba pero no se pasaba a `get_costs_history`; corregido |
-| Fix `_stat_id` sin asignar en `utils.py` | Tres funciones: `get_consumptions_history`, `get_costs_history`, `get_maximeter_history`; corregido con `else: return []` |
+| Fix `_stat_id` sin asignar en `utils.py` | Tres funciones: corregido con `else: return []` |
+| **Higiene de logs** | ~20 `_LOGGER.warning()` rutinarios del ciclo de actualización y de `simulate_billing` degradados a `INFO`; `WARNING` queda para condiciones anómalas reales |
 
-### ⚠️ Huecos abiertos
+### ⚠️ Huecos abiertos restantes
 
-#### Hueco 1 — Compensación excedentes por tarifa P2/P3
+#### Hueco A — LTS por periodo para excedente
 
-`const.py` define `PRICE_SURP_P2_KWH`, `PRICE_SURP_P3_KWH` pero:
-- `schemas.py` sólo expone `surplus_p1_kwh_eur` en el formulario
-- `config_flow.py` y `__init__.py` sólo empaquetan `surplus_p1_kwh_eur`
-- La fórmula PVPC por defecto compensa con precio spot (correcto para simplificada)
-- La fórmula custom sólo tiene un campo `surplus_formula` global
+`const.py` define `STAT_ID_P1/P2/P3_SURP_KWH` pero el coordinador sólo publica
+`edata:<scups>_surplus` agregado. Para explotar vertido por tarifa en el panel
+Energía de HA habría que añadir estas stats. Depende de disponibilidad en
+`e-data` de `surplus_p1_kWh / p2_kWh / p3_kWh` a nivel horario/diario.
 
-Si el usuario quiere compensación diferenciada P1/P2/P3, no tiene UI para ello.
+#### Hueco B — Websocket `surplus` sin selector de tarifa
 
-#### Hueco 2 — Validación end-to-end automatizada
+`edata/ws/surplus` devuelve excedente total sin discriminar por periodo.
+
+#### Hueco C — Validación end-to-end automatizada
 
 No hay tests automáticos. La validación es manual en HA con datos reales.
 
-#### Hueco 3 — Websocket `surplus` sin selector de tarifa
+---
 
-`edata/ws/surplus` devuelve excedente total sin discriminar por periodo.
-Para uso avanzado con compensación diferenciada habría que ampliar el contrato.
+## Invariantes de robustez garantizadas
+
+- **Nunca se pierden datos por fallo de dump**: `_clean_consumptions` usa `try/finally` para restaurar extras aunque `dump_storage` lance excepción.
+- **Nunca se corrompe el sidecar**: escritura vía `tmp + os.replace` (atómica en POSIX y Windows Python 3.3+).
+- **Sidecar corrupto se aísla, no se pierde**: el fichero dañado se conserva como `.corrupt-<ts>.json` para forensic.
+- **Backups rotativos diarios con retención de 30 días**: se salta rotación si el fichero principal está vacío o ilegible (no se sobrescribe un backup con basura).
+- **Reimport con snapshot local**: `_async_force_reimport_period` aprovecha backups disponibles antes de rellamar a Datadis.
+- **Estadísticas LTS reconstruibles**: `check_statistics_integrity` + `rebuild_statistics` + botones `soft_reset`, `import_all_data`, `force_surplus_reimport`.
+- **Alertas al usuario** para: recarga forzada, fallos repetidos de Datadis, sidecar corrupto, fallo en backup diario.
 
 ---
 
@@ -62,11 +77,11 @@ Para uso avanzado con compensación diferenciada habría que ampliar el contrato
 
 ## Roadmap pendiente
 
-### Fase siguiente — Cerrar compensación por tarifa (opcional)
+### Fase siguiente — Stats LTS por periodo de excedente (Hueco A)
 
-- Añadir `surplus_p2_kwh_eur` y `surplus_p3_kwh_eur` en `schemas.py` y `config_flow.py`
-- Alinear la fórmula surplus con una expresión condicional por periodo, o
-  mantener un único campo de precio y documentar la limitación explícitamente
+- Detectar si `e-data` expone `surplus_pX_kWh` en `consumptions` o `consumptions_daily_sum`
+- Registrar `edata:<scups>_pX_surplus` si hay datos disponibles
+- Alinear `_update_consumption_stats` con la lógica existente por tarifa
 
 ### Fase siguiente — Tests automáticos
 

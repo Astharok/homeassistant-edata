@@ -75,6 +75,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     const.PRICE_P2_KWH,
                     const.PRICE_P3_KWH,
                     const.PRICE_SURP_P1_KWH,
+                    const.PRICE_SURP_P2_KWH,
+                    const.PRICE_SURP_P3_KWH,
                     const.PRICE_METER_MONTH,
                     const.PRICE_MARKET_KW_YEAR,
                     const.PRICE_ELECTRICITY_TAX,
