@@ -951,6 +951,8 @@ class EdataSolarCard extends LitElement {
         .row-discount td { color: #4caf50; }
         .row-savings  td { color: #81c784; }
         .row-saving-total td { border-top: 1px solid #4caf50; font-weight: bold; color: #4caf50; font-size: 14px; padding-top: 6px; }
+        .row-sub td { color: var(--secondary-text-color); font-size: 12px; padding-top: 2px; padding-bottom: 2px; }
+        .row-subtotal td { border-top: 1px dashed var(--divider-color); padding-top: 4px; padding-bottom: 4px; }
 
         /* Historical charts */
         .history-section { padding: 8px 16px 16px; }
@@ -1034,34 +1036,58 @@ class EdataSolarCard extends LitElement {
         <!-- Bill breakdown -->
         ${hasBill ? html`
         <div class="section">
-          <div class="section-title">Factura estimada</div>
+          <div class="section-title">Factura estimada (desglose)</div>
           <table class="bill-table">
-            ${pt != null ? html`<tr><td>Potencia contratada (P1+P2)</td><td>${this._fmtEur(pt)}</td></tr>` : ""}
-            ${et != null ? html`<tr><td>Energía importada</td><td>${this._fmtEur(et)}</td></tr>` : ""}
-            ${ot != null ? html`<tr><td>Otros (contador, bono social)</td><td>${this._fmtEur(ot)}</td></tr>` : ""}
-            ${st != null ? html`<tr class="row-discount"><td>− Compensación excedentes</td><td>−${this._fmtEur(Math.abs(+st))}</td></tr>` : ""}
-            ${total != null ? html`<tr class="row-total"><td>TOTAL FACTURA</td><td>${this._fmtEur(total)}</td></tr>` : ""}
+            ${(rec?.breakdown_power || []).map(r => html`
+              <tr class="row-sub"><td style="padding-left:16px">${r.label}</td><td>${this._fmtEur(r.eur)}</td></tr>
+            `)}
+            ${pt != null ? html`<tr class="row-subtotal"><td><b>Potencia contratada</b></td><td><b>${this._fmtEur(pt)}</b></td></tr>` : ""}
+
+            ${(rec?.breakdown_energy || []).map(r => html`
+              <tr class="row-sub"><td style="padding-left:16px">${r.label} <span style="color:var(--secondary-text-color)">· ${(+r.kwh).toFixed(1)} kWh</span></td><td>${this._fmtEur(r.eur)}</td></tr>
+            `)}
+            ${et != null ? html`<tr class="row-subtotal"><td><b>Energía importada</b></td><td><b>${this._fmtEur(et)}</b></td></tr>` : ""}
+
+            ${(rec?.breakdown_others || []).map(r => html`
+              <tr class="row-sub"><td style="padding-left:16px">${r.label}</td><td>${this._fmtEur(r.eur)}</td></tr>
+            `)}
+            ${ot != null ? html`<tr class="row-subtotal"><td><b>Otros</b></td><td><b>${this._fmtEur(ot)}</b></td></tr>` : ""}
+
+            ${st != null && +st > 0 ? html`
+              ${(rec?.breakdown_surplus || []).filter(r => (+r.kwh) > 0 || (+r.eur) > 0).map(r => html`
+                <tr class="row-sub row-discount"><td style="padding-left:16px">${r.label} <span style="color:var(--secondary-text-color)">· ${(+r.kwh).toFixed(1)} kWh vertidos</span></td><td>−${this._fmtEur(r.eur)}</td></tr>
+              `)}
+              <tr class="row-subtotal row-discount"><td><b>− Compensación excedentes</b></td><td><b>−${this._fmtEur(Math.abs(+st))}</b></td></tr>
+            ` : ""}
+
+            ${total != null ? html`<tr class="row-total"><td>TOTAL A PAGAR</td><td>${this._fmtEur(total)}</td></tr>` : ""}
           </table>
+          <div style="font-size:11px;color:var(--secondary-text-color);padding:4px 0 0 2px">
+            Total = Potencia + Energía + Otros − Compensación excedentes. El autoconsumo no entra en el total: aparece abajo como ahorro porque es energía que NO has comprado.
+          </div>
         </div>` : ""}
 
         <!-- Savings breakdown -->
         ${hasSavings ? html`
         <div class="section">
-          <div class="section-title">☀ Ahorro por autoconsumo solar</div>
+          <div class="section-title">☀ Ahorro por autoconsumo solar (no se aplica al total)</div>
           <table class="bill-table">
+            ${(rec?.breakdown_savings || []).filter(r => (+r.kwh) > 0 || (+r.eur) > 0).map(r => html`
+              <tr class="row-sub row-savings"><td style="padding-left:16px">${r.label} <span style="color:var(--secondary-text-color)">· ${(+r.kwh).toFixed(1)} kWh autoconsumidos</span></td><td>${this._fmtEur(r.eur)}</td></tr>
+            `)}
             ${savSc != null && savSc > 0 ? html`
-            <tr class="row-savings">
-              <td>Energía solar no comprada (precio por período)</td>
-              <td>${this._fmtEur(savSc)}</td>
+            <tr class="row-subtotal row-savings">
+              <td><b>Energía solar no comprada (a precio por período)</b></td>
+              <td><b>${this._fmtEur(savSc)}</b></td>
             </tr>` : ""}
             ${savSurplus != null && savSurplus > 0 ? html`
-            <tr class="row-savings">
-              <td>Compensación por energía vertida (precio fijo)</td>
-              <td>${this._fmtEur(savSurplus)}</td>
+            <tr class="row-subtotal row-savings">
+              <td><b>Compensación por energía vertida</b></td>
+              <td><b>${this._fmtEur(savSurplus)}</b></td>
             </tr>` : ""}
             ${savTotal != null ? html`
             <tr class="row-saving-total">
-              <td>AHORRO SOLAR TOTAL</td>
+              <td>BENEFICIO SOLAR TOTAL</td>
               <td>${this._fmtEur(savTotal)}</td>
             </tr>` : ""}
           </table>

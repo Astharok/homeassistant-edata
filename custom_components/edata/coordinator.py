@@ -1225,6 +1225,10 @@ class EdataCoordinator(DataUpdateCoordinator):
         # (P1/P2/P3) by matching against the cleaned consumption records, then apply the
         # corresponding kwh price * taxes to compute the cost avoided.
         savings_agg: dict[str, float] = {}
+        # Per-period savings (EUR) and per-period self-consumption kWh, for the
+        # itemised breakdown shown in the dashboard card.
+        savings_agg_by_period: dict[str, dict[str, float]] = {}
+        sc_kwh_by_period: dict[str, dict[str, float]] = {}
         with contextlib.suppress(Exception):
             if self.billing_rules is not None:
                 _iva = float(self.billing_rules[const.PRICE_IVA_TAX] or 1.0)
@@ -1259,7 +1263,16 @@ class EdataCoordinator(DataUpdateCoordinator):
                     _mk = (_day - timedelta(days=cycle_offset)).replace(day=1).isoformat()
                     _c_iso = _dt_e.replace(minute=0, second=0, microsecond=0).isoformat()
                     _period = _period_lkp.get(_c_iso, "p3")
-                    savings_agg[_mk] = savings_agg.get(_mk, 0.0) + _sc * _prices.get(_period, _prices.get("p3", 0.0))
+                    _price = _prices.get(_period, _prices.get("p3", 0.0))
+                    savings_agg[_mk] = savings_agg.get(_mk, 0.0) + _sc * _price
+                    _mk_per = savings_agg_by_period.setdefault(
+                        _mk, {"p1": 0.0, "p2": 0.0, "p3": 0.0}
+                    )
+                    _mk_per[_period] += _sc * _price
+                    _mk_kwh = sc_kwh_by_period.setdefault(
+                        _mk, {"p1": 0.0, "p2": 0.0, "p3": 0.0}
+                    )
+                    _mk_kwh[_period] += _sc
 
         # Build cost monthly lookup keyed by month ISO datetime string
         cost_by_month: dict[str, dict] = {}
@@ -1271,6 +1284,79 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         if not agg and not cost_by_month:
             return monthly
+
+        # --- Billing prices snapshot for per-period breakdown ---
+        # Captured once here so the per-month enrichment loop below can split
+        # energy_term / power_term / surplus_term / others_term into their
+        # per-period / per-concept components WITHOUT re-running the full
+        # BillingProcessor per month. The raw computed amounts are then
+        # RENORMALISED against the authoritative term totals from python-edata
+        # so the breakdown always sums to the trusted totals.
+        _br_iva = 1.0
+        _br_etax = 1.0
+        _br_p1_kwh = 0.0
+        _br_p2_kwh = 0.0
+        _br_p3_kwh = 0.0
+        _br_surp_p1 = 0.0
+        _br_surp_p2 = 0.0
+        _br_surp_p3 = 0.0
+        _br_p1_kw_year = 0.0
+        _br_p2_kw_year = 0.0
+        _br_market_kw_year = 0.0
+        _br_meter_month = 0.0
+        if self.billing_rules is not None:
+            with contextlib.suppress(Exception):
+                _br_iva = float(self.billing_rules[const.PRICE_IVA_TAX] or 1.0)
+                _br_etax = float(self.billing_rules[const.PRICE_ELECTRICITY_TAX] or 1.0)
+                _br_p1_kwh = float(self.billing_rules[const.PRICE_P1_KWH] or 0.0)
+                _br_p2_kwh = float(self.billing_rules[const.PRICE_P2_KWH] or 0.0)
+                _br_p3_kwh = float(self.billing_rules[const.PRICE_P3_KWH] or 0.0)
+                _br_surp_p1 = float(self.billing_rules[const.PRICE_SURP_P1_KWH] or 0.0)
+                _br_surp_p2 = float(self.billing_rules[const.PRICE_SURP_P2_KWH] or 0.0)
+                _br_surp_p3 = float(self.billing_rules[const.PRICE_SURP_P3_KWH] or 0.0)
+                _br_p1_kw_year = float(self.billing_rules[const.PRICE_P1_KW_YEAR] or 0.0)
+                _br_p2_kw_year = float(self.billing_rules[const.PRICE_P2_KW_YEAR] or 0.0)
+                _br_market_kw_year = float(self.billing_rules[const.PRICE_MARKET_KW_YEAR] or 0.0)
+                _br_meter_month = float(self.billing_rules[const.PRICE_METER_MONTH] or 0.0)
+
+        # Contract power (kW). Use the most recent contract; for simplicity we
+        # assume the same contracted power for every month in the breakdown.
+        _contract_p1_kw = 0.0
+        _contract_p2_kw = 0.0
+        with contextlib.suppress(Exception):
+            _contracts = self._edata.data.get("contracts", [])
+            if _contracts:
+                _last = _contracts[-1]
+                # python-edata stores `power` as a list [p1, p2]; older records
+                # may also expose power_p1/power_p2 as top-level keys.
+                _power_list = _last.get("power") or []
+                if len(_power_list) >= 1 and _power_list[0]:
+                    _contract_p1_kw = float(_power_list[0])
+                if len(_power_list) >= 2 and _power_list[1]:
+                    _contract_p2_kw = float(_power_list[1])
+                if _contract_p1_kw == 0.0 and _last.get("power_p1"):
+                    _contract_p1_kw = float(_last["power_p1"])
+                if _contract_p2_kw == 0.0 and _last.get("power_p2"):
+                    _contract_p2_kw = float(_last["power_p2"])
+                # 2.0TD contracts with a single power value: assume same for P1/P2
+                if _contract_p2_kw == 0.0 and _contract_p1_kw > 0.0:
+                    _contract_p2_kw = _contract_p1_kw
+
+        def _renorm(parts: list[float], total: float) -> list[float]:
+            """Rescale raw `parts` so they sum exactly to `total`.
+
+            If the raw sum is 0 or negative we distribute `total` equally
+            as a fallback. This guarantees the UI breakdown always matches
+            the authoritative trusted term totals from python-edata.
+            """
+            _raw_sum = sum(parts)
+            if _raw_sum <= 0:
+                if total == 0:
+                    return [0.0 for _ in parts]
+                _n = max(len(parts), 1)
+                return [total / _n for _ in parts]
+            _k = total / _raw_sum
+            return [p * _k for p in parts]
 
         enriched = []
         for record in monthly:
@@ -1303,7 +1389,86 @@ class EdataCoordinator(DataUpdateCoordinator):
                     # subtract the surplus compensation here so the dashboard
                     # total matches what will be billed.
                     rec["value_eur"] = round(_e + _p + _o - _s, 4)
+
+                    # -----------------------------------------------------------------
+                    # Per-period breakdown (for invoice-style dashboard rendering)
+                    # -----------------------------------------------------------------
+                    _v_p1 = float(rec.get("value_p1_kWh") or 0.0)
+                    _v_p2 = float(rec.get("value_p2_kWh") or 0.0)
+                    _v_p3 = float(rec.get("value_p3_kWh") or 0.0)
+                    _sr_p1 = float(rec.get("surplus_p1_kWh") or 0.0)
+                    _sr_p2 = float(rec.get("surplus_p2_kWh") or 0.0)
+                    _sr_p3 = float(rec.get("surplus_p3_kWh") or 0.0)
+                    _factor = _br_iva * _br_etax
+
+                    # Energy per period — raw computed, then renormalised to match energy_term
+                    _raw_e = [
+                        _v_p1 * _br_p1_kwh * _factor,
+                        _v_p2 * _br_p2_kwh * _factor,
+                        _v_p3 * _br_p3_kwh * _factor,
+                    ]
+                    _e1, _e2, _e3 = _renorm(_raw_e, _e)
+                    rec["breakdown_energy"] = [
+                        {"label": "P1 Punta", "kwh": round(_v_p1, 3), "eur": round(_e1, 4)},
+                        {"label": "P2 Llano", "kwh": round(_v_p2, 3), "eur": round(_e2, 4)},
+                        {"label": "P3 Valle", "kwh": round(_v_p3, 3), "eur": round(_e3, 4)},
+                    ]
+
+                    # Power per period — share based on contracted kW × yearly rate.
+                    # We include market_kw_year on P1 when the formula likely applies
+                    # it there (PVPC default); for purely custom formulas the share
+                    # is still a reasonable approximation and totals are normalised
+                    # to power_term anyway.
+                    _raw_pw = [
+                        _contract_p1_kw * (_br_p1_kw_year + _br_market_kw_year),
+                        _contract_p2_kw * _br_p2_kw_year,
+                    ]
+                    _pw1, _pw2 = _renorm(_raw_pw, _p)
+                    rec["breakdown_power"] = [
+                        {"label": f"P1 ({_contract_p1_kw:.2f} kW)", "eur": round(_pw1, 4)},
+                        {"label": f"P2 ({_contract_p2_kw:.2f} kW)", "eur": round(_pw2, 4)},
+                    ]
+
+                    # Surplus per period — raw using surplus_pX_kwh_eur if set,
+                    # else using the import price fallback. Renormalised to surplus_term.
+                    _sp1 = _br_surp_p1 or _br_p1_kwh
+                    _sp2 = _br_surp_p2 or _br_p2_kwh
+                    _sp3 = _br_surp_p3 or _br_p3_kwh
+                    _raw_sr = [
+                        _sr_p1 * _sp1,
+                        _sr_p2 * _sp2,
+                        _sr_p3 * _sp3,
+                    ]
+                    _s1, _s2, _s3 = _renorm(_raw_sr, _s)
+                    rec["breakdown_surplus"] = [
+                        {"label": "P1 Punta", "kwh": round(_sr_p1, 3), "eur": round(_s1, 4)},
+                        {"label": "P2 Llano", "kwh": round(_sr_p2, 3), "eur": round(_s2, 4)},
+                        {"label": "P3 Valle", "kwh": round(_sr_p3, 3), "eur": round(_s3, 4)},
+                    ]
+
+                    # Others — by default only meter rent; expose as single line.
+                    # If/when more "others" components are supported they can be
+                    # appended here and renormalised to _o.
+                    rec["breakdown_others"] = [
+                        {"label": "Alquiler contador", "eur": round(_o, 4)},
+                    ]
+
                 rec["savings_term"] = round(savings_agg.get(month_key, 0.0), 4)
+
+                # Savings per period — from the hour-by-hour aggregation above.
+                _sv_by_p = savings_agg_by_period.get(month_key) or {}
+                _kwh_by_p = sc_kwh_by_period.get(month_key) or {}
+                rec["breakdown_savings"] = [
+                    {"label": "P1 Punta",
+                     "kwh": round(_kwh_by_p.get("p1", 0.0), 3),
+                     "eur": round(_sv_by_p.get("p1", 0.0), 4)},
+                    {"label": "P2 Llano",
+                     "kwh": round(_kwh_by_p.get("p2", 0.0), 3),
+                     "eur": round(_sv_by_p.get("p2", 0.0), 4)},
+                    {"label": "P3 Valle",
+                     "kwh": round(_kwh_by_p.get("p3", 0.0), 3),
+                     "eur": round(_sv_by_p.get("p3", 0.0), 4)},
+                ]
             enriched.append(rec)
         return enriched
 
