@@ -10,6 +10,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EVENT_HOMEASSISTAN
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
+from homeassistant.components import persistent_notification
 
 from . import const, utils
 from .coordinator import EdataCoordinator
@@ -106,6 +107,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "%s: auto-migrated legacy surplus_formula %r -> %r "
                 "(open Options -> Formulas -> Confirm to persist).",
                 scups, _orig_surplus, _migrated_surplus,
+            )
+            persistent_notification.async_create(
+                hass,
+                (
+                    f"La integración edata ha detectado una fórmula de compensación "
+                    f"de excedentes obsoleta y la ha corregido automáticamente en memoria.\n\n"
+                    f"**Anterior**: `{_orig_surplus}`\n"
+                    f"**Nueva**: `{_migrated_surplus}`\n\n"
+                    f"**Para recalcular la factura histórica** (panel Energía y "
+                    f"tarjeta edata-card), abre *Configuración → Dispositivos y "
+                    f"servicios → edata → Configurar → Fórmulas → Continuar*, "
+                    f"pon una fecha antigua en «Recalcular facturas desde...» y "
+                    f"marca «Confirmar cambios». El valor de la fórmula quedará "
+                    f"guardado y los costes históricos se recalcularán."
+                ),
+                title="edata: fórmula de excedentes corregida",
+                notification_id=f"edata_surplus_formula_migrated_{scups}",
             )
     else:
         pricing_rules = None

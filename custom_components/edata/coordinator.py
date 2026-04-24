@@ -1948,6 +1948,27 @@ class EdataCoordinator(DataUpdateCoordinator):
         else:
             pricing_rules = None
 
+        if pricing_rules is not None:
+            # Mirror single surplus price across all 3 periods (UI only asks for P1;
+            # BillingProcessor expects all 3 in PricingRules).
+            _surp_p1 = pricing_rules.get(const.PRICE_SURP_P1_KWH)
+            if _surp_p1 is not None:
+                pricing_rules[const.PRICE_SURP_P2_KWH] = _surp_p1
+                pricing_rules[const.PRICE_SURP_P3_KWH] = _surp_p1
+
+            # Auto-migrate legacy buggy surplus_formula.
+            _orig_surplus = pricing_rules.get(const.BILLING_SURPLUS_FORMULA)
+            _migrated_surplus = const.migrate_surplus_formula(
+                _orig_surplus, pvpc=bool(options.get(const.CONF_PVPC, False))
+            )
+            if _migrated_surplus != _orig_surplus:
+                pricing_rules[const.BILLING_SURPLUS_FORMULA] = _migrated_surplus
+                _LOGGER.warning(
+                    "%s: auto-migrated legacy surplus_formula %r -> %r "
+                    "(open Options -> Formulas -> Confirm to persist).",
+                    self.scups, _orig_surplus, _migrated_surplus,
+                )
+
         self._edata.pricing_rules = pricing_rules
         self._edata.is_pvpc = options[const.CONF_PVPC]
         self._edata.enable_billing = options[const.CONF_BILLING]
