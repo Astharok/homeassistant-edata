@@ -740,13 +740,22 @@ class EdataSolarCard extends LitElement {
 
   set hass(hass) {
     this._hass = hass;
-    if (!this._fetched) {
-      this._fetched = true;
-      this._fetchData();
+    // Re-fetch whenever the edata sensor state changes so the panel refreshes
+    // automatically after each coordinator update (including the first one after
+    // HA restart, which may complete after the card is first rendered).
+    const entity = this._config?.entity;
+    const state = entity ? hass?.states?.[entity]?.state : undefined;
+    if (state !== this._lastEntityState) {
+      this._lastEntityState = state;
+      if (!this._fetching) {
+        this._fetchData();
+      }
     }
   }
 
   async _fetchData() {
+    if (this._fetching) return;
+    this._fetching = true;
     try {
       this._monthly = await this._hass.callWS({
         type: "edata/consumptions/monthly",
@@ -758,6 +767,8 @@ class EdataSolarCard extends LitElement {
       this._renderAllCharts();
     } catch (e) {
       console.error("edata-solar-card: fetch error", e);
+    } finally {
+      this._fetching = false;
     }
   }
 

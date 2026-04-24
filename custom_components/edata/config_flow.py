@@ -174,13 +174,38 @@ async def simulate_last_month_billing(
     monthly = proc.output.get("monthly", [])
 
     # --- Compute self-consumption savings via a second BillingProcessor run ---
+    # Read sidecar directly so we have sc data even if _apply_extras_sidecar
+    # hasn't run yet (coordinator first cycle may not have completed).
+    _coordinator = hass.data[const.DOMAIN][coordinator_id].get("coordinator")
+    _sidecar_extras: dict = {}
+    if _coordinator is not None:
+        try:
+            _sidecar_extras = await hass.async_add_executor_job(
+                _coordinator._read_sidecar_sync
+            )
+        except Exception:
+            _LOGGER.warning("simulate_billing: could not read sidecar, savings_term will be 0")
+
+    _LOGGER.warning(
+        "simulate_billing: sidecar entries=%d (coordinator available=%s)",
+        len(_sidecar_extras),
+        _coordinator is not None,
+    )
+
     # Build consumptions_with_sc: same as consumptions_clean but with
     # self_consumption_kWh added back into the correct period field so that
     # BillingProcessor applies the same per-period energy formula to it.
     _SC_KEYS_SET = {"generation_kWh", "self_consumption_kWh", "obtain_method"}
     consumptions_with_sc = []
     for rec in consumptions:
-        sc = rec.get("self_consumption_kWh") or 0.0
+        # Prefer sidecar (always fresh) over in-memory (may not be enriched yet)
+        sc = 0.0
+        _rec_dt = rec.get("datetime")
+        if _sidecar_extras and _rec_dt is not None:
+            _iso = _rec_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+            sc = (_sidecar_extras.get(_iso) or {}).get("self_consumption_kWh") or 0.0
+        if sc == 0.0:
+            sc = rec.get("self_consumption_kWh") or 0.0
         clean = {k: v for k, v in rec.items() if k not in _SC_KEYS_SET}
         if sc > 0:
             if (clean.get("value_p1_kWh") or 0.0) > 0:
@@ -456,6 +481,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             "value_eur": _fmt(sim.get("value_eur")),
         }
 
+        _LOGGER.warning(
+            "async_step_confirm: showing form sim=%s sim_all=%d placeholders=%s",
+            bool(sim),
+            len(self.sim_all or []),
+            {k: v for k, v in placeholders.items() if k in ("month", "value_eur", "savings_term")},
+        )
+
         try:
             return self.async_show_form(
                 step_id="confirm",
@@ -464,5 +496,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 description_placeholders=placeholders,
             )
-        except Exception as e:
-            _LOGGER.exception(e)
+        except Exception:
+            _LOGGER.exception("async_step_confirm: async_show_form raised — showing form without placeholders")
+            return self.async_show_form(
+                step_id="confirm",
+                data_schema=vol.Schema(
+                    sch.OPTIONS_STEP_CONFIRM(self.sim, self.sim_all, self._confirm_apply_from)
+                ),
+            )
