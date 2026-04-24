@@ -50,9 +50,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     component_logger = logging.getLogger(f"custom_components.{const.DOMAIN}")
 
     if entry.options.get(const.CONF_DEBUG, False):
-        logging.getLogger("edata").setLevel(logging.INFO)
-        component_logger.setLevel(logging.INFO)
-        _LOGGER.info("%s: debug logging enabled", scups)
+        logging.getLogger("edata").setLevel(logging.DEBUG)
+        component_logger.setLevel(logging.DEBUG)
+        _LOGGER.info("%s: debug logging enabled (level=DEBUG for edata + custom_components.edata)", scups)
     else:
         logging.getLogger("edata").setLevel(logging.WARNING)
         component_logger.setLevel(logging.WARNING)
@@ -75,8 +75,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     const.PRICE_P2_KWH,
                     const.PRICE_P3_KWH,
                     const.PRICE_SURP_P1_KWH,
-                    const.PRICE_SURP_P2_KWH,
-                    const.PRICE_SURP_P3_KWH,
                     const.PRICE_METER_MONTH,
                     const.PRICE_MARKET_KW_YEAR,
                     const.PRICE_ELECTRICITY_TAX,
@@ -88,6 +86,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             }
         )
+        # Mirror single surplus price across all 3 periods (UI only asks for P1;
+        # BillingProcessor expects all 3 in PricingRules).
+        _surp_p1 = pricing_rules.get(const.PRICE_SURP_P1_KWH)
+        if _surp_p1 is not None:
+            pricing_rules[const.PRICE_SURP_P2_KWH] = _surp_p1
+            pricing_rules[const.PRICE_SURP_P3_KWH] = _surp_p1
     else:
         pricing_rules = None
 

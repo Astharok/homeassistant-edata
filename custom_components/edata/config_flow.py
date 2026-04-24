@@ -118,8 +118,6 @@ async def simulate_last_month_billing(
             const.PRICE_P2_KWH,
             const.PRICE_P3_KWH,
             const.PRICE_SURP_P1_KWH,
-            const.PRICE_SURP_P2_KWH,
-            const.PRICE_SURP_P3_KWH,
             const.PRICE_METER_MONTH,
             const.PRICE_MARKET_KW_YEAR,
             const.PRICE_ELECTRICITY_TAX,
@@ -130,6 +128,13 @@ async def simulate_last_month_billing(
             const.BILLING_SURPLUS_FORMULA,
         )
     }
+    # Mirror single surplus price across all 3 periods (UI only asks P1; BillingProcessor
+    # needs P2/P3 for PricingRules schema validation). In Spain the simplified compensation
+    # applies the same €/kWh to all periods.
+    _surp_p1 = pricing_rules_input.get(const.PRICE_SURP_P1_KWH)
+    if _surp_p1 is not None:
+        pricing_rules_input[const.PRICE_SURP_P2_KWH] = _surp_p1
+        pricing_rules_input[const.PRICE_SURP_P3_KWH] = _surp_p1
     _LOGGER.info("simulate_billing: pricing_rules_input=%s", pricing_rules_input)
 
     try:
@@ -154,6 +159,28 @@ async def simulate_last_month_billing(
         len(contracts),
         len(pvpc),
     )
+
+    # Debug helper: per-month surplus kWh sum so the user can verify the
+    # BillingProcessor inputs match what the solar panel shows.
+    _by_month: dict = {}
+    try:
+        for _c in consumptions_clean:
+            _dt = _c.get("datetime")
+            if _dt is None:
+                continue
+            _key = _dt.strftime("%Y-%m")
+            _m = _by_month.setdefault(_key, {"kwh": 0.0, "surplus_kwh": 0.0, "hours": 0})
+            _m["kwh"] += _c.get("value_kWh") or 0.0
+            _m["surplus_kwh"] += _c.get("surplus_kWh") or 0.0
+            _m["hours"] += 1
+        for _k in sorted(_by_month):
+            _m = _by_month[_k]
+            _LOGGER.info(
+                "simulate_billing: input month %s hours=%d kwh=%.3f surplus_kwh=%.3f",
+                _k, _m["hours"], _m["kwh"], _m["surplus_kwh"],
+            )
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("simulate_billing: monthly input summary failed", exc_info=True)
 
     _bp_input = {
         "consumptions": consumptions_clean,
@@ -248,8 +275,10 @@ async def simulate_last_month_billing(
         )
 
     for i, rec in enumerate(monthly):
+        _key = rec["datetime"].strftime("%Y-%m")
+        _input = _by_month.get(_key, {"kwh": 0.0, "surplus_kwh": 0.0})
         _LOGGER.info(
-            "simulate_billing: [%d] %s delta_h=%d energy=%.4f power=%.4f surplus=%.4f others=%.4f savings=%.4f total=%.4f",
+            "simulate_billing: [%d] %s delta_h=%d energy=%.4f power=%.4f surplus=%.4f others=%.4f savings=%.4f total=%.4f | input_kwh=%.2f input_surplus_kwh=%.2f",
             i,
             rec["datetime"].strftime("%m/%Y"),
             rec.get("delta_h", 0),
@@ -259,7 +288,29 @@ async def simulate_last_month_billing(
             rec.get("others_term") or 0,
             rec.get("savings_term") or 0,
             rec.get("value_eur") or 0,
+            _input.get("kwh", 0.0),
+            _input.get("surplus_kwh", 0.0),
         )
+        # Independent formula sanity check for surplus so the user can spot
+        # mismatches between their chosen formula and expected magnitude.
+        _surp_kwh = _input.get("surplus_kwh", 0.0)
+        _surp_price = pricing_rules_input.get(const.PRICE_SURP_P1_KWH)
+        if _surp_kwh > 0 and _surp_price:
+            _expected_raw = _surp_kwh * float(_surp_price)
+            _expected_with_taxes = (
+                _expected_raw
+                * float(pricing_rules_input.get(const.PRICE_ELECTRICITY_TAX, 1.0))
+                * float(pricing_rules_input.get(const.PRICE_IVA_TAX, 1.0))
+            )
+            _LOGGER.info(
+                "simulate_billing: [%d] %s surplus sanity: %.3f kWh * %.4f €/kWh = %.3f € (raw) | %.3f € (with tax*iva)",
+                i,
+                rec["datetime"].strftime("%m/%Y"),
+                _surp_kwh,
+                float(_surp_price),
+                _expected_raw,
+                _expected_with_taxes,
+            )
     if not monthly:
         _LOGGER.warning("simulate_billing: no monthly records (normal after switching to PVPC)")
     return monthly

@@ -110,18 +110,23 @@
           "p1_kwh_eur": "Energia: Preu per kWh a la franja Punta - P1 (€)",
           "p2_kwh_eur": "Energia: Preu per kWh a la franja Pla - P2 (€)",
           "p3_kwh_eur": "Energia: Preu per kWh a la franja Vall - P3 (€)",
-          "surplus_p1_kwh_eur": "Compensació per kWh generat en P1 (€)",
-          "surplus_p2_kwh_eur": "Compensació per kWh generat en P2 (€)",
-          "surplus_p3_kwh_eur": "Compensació per kWh generat en P3 (€)"
+          "surplus_p1_kwh_eur": "Compensació per kWh excedent (€)"
         }
       },
       "formulas": {
-        "title": "Fórmules",
+        "title": "Fórmules de facturació",
+        "description": "Expressions jinja2 avaluades per hora.\n\n**Variables horàries**: `kwh` (consum), `surplus_kwh` (excedent), `kwh_eur` (€/kWh del període o PVPC), `surplus_kwh_eur` (compensació €/kWh del període), `p1_kw`, `p2_kw`.\n\n**Preus configurats**: `p1_kwh_eur`, `p2_kwh_eur`, `p3_kwh_eur`, `surplus_p1_kwh_eur`, `p1_kw_year_eur`, `p2_kw_year_eur`, `meter_month_eur`, `market_kw_year_eur`, `electricity_tax`, `iva_tax`.\n\n**Suggerides (tarifa plana / no PVPC)**:\n- Energia: `electricity_tax * iva_tax * kwh_eur * kwh`\n- Potència: `electricity_tax * iva_tax * (p1_kw * p1_kw_year_eur + p2_kw * p2_kw_year_eur) / 365 / 24`\n- Altres: `iva_tax * meter_month_eur / 30 / 24`\n- Compensació: `surplus_kwh * surplus_kwh_eur`\n\n**Suggerides (PVPC)**:\n- Energia: `electricity_tax * iva_tax * kwh_eur * kwh`\n- Potència: `electricity_tax * iva_tax * (p1_kw * (p1_kw_year_eur + market_kw_year_eur) + p2_kw * p2_kw_year_eur) / 365 / 24`\n- Altres: `iva_tax * meter_month_eur / 30 / 24`\n- Compensació: `surplus_kwh * kwh_eur`",
         "data": {
           "energy_formula": "Terme d'energia (€)",
           "power_formula": "Terme de potència (€)",
           "others_formula": "Altres despeses (p.e., comptador, €)",
-          "surplus_formula": "Retorn per generació (es resta del cost total, €)"
+          "surplus_formula": "Compensació per excedents (€, es resta)"
+        },
+        "data_description": {
+          "energy_formula": "Suggerida: electricity_tax * iva_tax * kwh_eur * kwh",
+          "power_formula": "Suggerida: electricity_tax * iva_tax * (p1_kw * p1_kw_year_eur + p2_kw * p2_kw_year_eur) / 365 / 24",
+          "others_formula": "Suggerida: iva_tax * meter_month_eur / 30 / 24",
+          "surplus_formula": "Suggerida: surplus_kwh * surplus_kwh_eur  (sense IVA en compensació simplificada)"
         }
       },
       "confirm": {

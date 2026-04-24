@@ -113,18 +113,23 @@
           "p1_kwh_eur": "EUR cost of KWH in P1",
           "p2_kwh_eur": "EUR cost of KWH in P2",
           "p3_kwh_eur": "EUR cost of KWH in P3",
-          "surplus_p1_kwh_eur": "EUR surplus compensation cost of KWH in P1",
-          "surplus_p2_kwh_eur": "EUR surplus compensation cost of KWH in P2",
-          "surplus_p3_kwh_eur": "EUR surplus compensation cost of KWH in P3"
+          "surplus_p1_kwh_eur": "Surplus compensation (EUR/kWh)"
         }
       },
       "formulas": {
-        "title": "Formulas",
+        "title": "Billing formulas",
+        "description": "Jinja2 expressions evaluated per hour.\n\n**Hourly variables**: `kwh` (consumption), `surplus_kwh` (exported), `kwh_eur` (€/kWh for the period or PVPC), `surplus_kwh_eur` (surplus €/kWh for the period), `p1_kw`, `p2_kw`.\n\n**Configured prices**: `p1_kwh_eur`, `p2_kwh_eur`, `p3_kwh_eur`, `surplus_p1_kwh_eur`, `p1_kw_year_eur`, `p2_kw_year_eur`, `meter_month_eur`, `market_kw_year_eur`, `electricity_tax`, `iva_tax`.\n\n**Suggested (flat tariff / non-PVPC)**:\n- Energy: `electricity_tax * iva_tax * kwh_eur * kwh`\n- Power: `electricity_tax * iva_tax * (p1_kw * p1_kw_year_eur + p2_kw * p2_kw_year_eur) / 365 / 24`\n- Others: `iva_tax * meter_month_eur / 30 / 24`\n- Surplus: `surplus_kwh * surplus_kwh_eur`\n\n**Suggested (PVPC)**:\n- Energy: `electricity_tax * iva_tax * kwh_eur * kwh`\n- Power: `electricity_tax * iva_tax * (p1_kw * (p1_kw_year_eur + market_kw_year_eur) + p2_kw * p2_kw_year_eur) / 365 / 24`\n- Others: `iva_tax * meter_month_eur / 30 / 24`\n- Surplus: `surplus_kwh * kwh_eur`",
         "data": {
-          "energy_formula": "Energy term calculus (EUR)",
-          "power_formula": "Power term calculus (EUR)",
-          "others_formula": "Others term calculus (EUR)",
-          "surplus_formula": "Surplus term calculus (this quantity gets substracted)"
+          "energy_formula": "Energy term (EUR)",
+          "power_formula": "Power term (EUR)",
+          "others_formula": "Others term (e.g., meter, EUR)",
+          "surplus_formula": "Surplus compensation (EUR, subtracted)"
+        },
+        "data_description": {
+          "energy_formula": "Suggested: electricity_tax * iva_tax * kwh_eur * kwh",
+          "power_formula": "Suggested: electricity_tax * iva_tax * (p1_kw * p1_kw_year_eur + p2_kw * p2_kw_year_eur) / 365 / 24",
+          "others_formula": "Suggested: iva_tax * meter_month_eur / 30 / 24",
+          "surplus_formula": "Suggested: surplus_kwh * surplus_kwh_eur  (no tax — simplified compensation)"
         }
       },
       "confirm": {

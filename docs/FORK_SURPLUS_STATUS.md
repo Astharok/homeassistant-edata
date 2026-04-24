@@ -1,6 +1,6 @@
 # Estado del fork y soporte de vertido
 
-> Última actualización: 2026-04-24
+> Última actualización: 2026-04-24 (v2 — revisión UX + corrección surplus)
 
 ## Objetivo del fork
 
@@ -10,7 +10,7 @@ panel Lovelace de dashboard energético.
 
 ---
 
-## Estado actual (2026-04-24 — auditoría de robustez)
+## Estado actual (2026-04-24 — auditoría de robustez + revisión UX)
 
 ### ✅ Completado en esta rama
 
@@ -25,8 +25,12 @@ panel Lovelace de dashboard energético.
 | Enriquecimiento websocket mensual | `_enrich_monthly_with_sidecar()` añade solar + terms de coste + `savings_term` por ciclo de facturación |
 | Panel `edata-solar-card` | KPIs, tabla P1/P2/P3, donuts, tabla de factura, ahorro autoconsumo, históricos |
 | **Panel con re-fetch automático** | La tarjeta observa el estado del sensor edata y re-fetcha al cambiar, evitando quedarse en "Cargando" |
-| **Compensación excedentes P1/P2/P3** | Cerrado Hueco 1: `OPTIONS_STEP_COSTS` expone P1, P2 y P3; `pricing_rules` los empaqueta en `__init__.py` y en la simulación |
-| Fórmula surplus PVPC corregida | Usaba `surplus_p1_kwh_eur` (None → 0); ahora usa `kwh_eur` (precio spot) |
+| **Compensación excedentes unificada** | UI expone un único campo `surplus_p1_kwh_eur` (la compensación simplificada en España es igual para P1/P2/P3). P2/P3 se reflejan automáticamente al construir `pricing_rules` |
+| **Fórmula surplus por defecto corregida** | Antes: `electricity_tax * iva_tax * surplus_kwh * surplus_p1_kwh_eur` (añadía IVA + impuesto eléctrico incorrectos). Ahora: `surplus_kwh * surplus_kwh_eur` (sin impuestos — compensación se descuenta en bruto antes del IVA) |
+| **Variables y fórmulas sugeridas en UI** | El paso `formulas` muestra `description` con la lista completa de variables disponibles y `data_description` por campo con la fórmula sugerida según PVPC/flat |
+| **Desglose simulación siempre visible** | El selector de mes muestra `MM/YYYY · Total X € · E... · P... · −Vert... · ☀...` en la etiqueta, garantizando que el usuario vea los totales incluso si el frontend de HA no renderiza la `description` markdown |
+| **Log de validación de surplus** | `simulate_billing` imprime por mes `input_kwh` / `input_surplus_kwh` y un sanity check `surplus_kwh * price = esperado € (bruto / con tax)` para diagnosticar discrepancias |
+| **Modo debug = nivel DEBUG** | `CONF_DEBUG=true` ahora pone el logger en `logging.DEBUG` (antes `INFO`); añadido volcado per-month en el ciclo de actualización con kWh, surplus, generación, autoconsumo y todos los términos de coste |
 | Fix `TemplateSelector` → `TextSelector` | Evitaba UndefinedError en fórmulas al guardar |
 | Fix `PREVENT_EXTRA` generalizado | `_clean_consumptions()` context manager en todos los call sites |
 | Lecturas sidecar en executor | Sin bloqueo del event loop |
@@ -35,6 +39,19 @@ panel Lovelace de dashboard energético.
 | Fix `from_now` ignorado en `ws_get_cost` | El parámetro se calculaba pero no se pasaba a `get_costs_history`; corregido |
 | Fix `_stat_id` sin asignar en `utils.py` | Tres funciones: corregido con `else: return []` |
 | **Higiene de logs** | ~20 `_LOGGER.warning()` rutinarios del ciclo de actualización y de `simulate_billing` degradados a `INFO`; `WARNING` queda para condiciones anómalas reales |
+
+### ⚠️ Huecos abiertos restantes
+
+#### Hueco A — LTS por periodo para excedente
+
+`const.py` define `STAT_ID_P1/P2/P3_SURP_KWH` pero el coordinador sólo publica
+`edata:<scups>_surplus` agregado. Para explotar vertido por tarifa en el panel
+Energía de HA habría que añadir estas stats. Depende de disponibilidad en
+`e-data` de `surplus_p1_kWh / p2_kWh / p3_kWh` a nivel horario/diario.
+
+#### Hueco B — Websocket `surplus` sin selector de tarifa
+
+`edata/ws/surplus` devuelve excedente total sin discriminar por periodo.
 
 ### ⚠️ Huecos abiertos restantes
 

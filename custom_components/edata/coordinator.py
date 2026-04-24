@@ -482,6 +482,28 @@ class EdataCoordinator(DataUpdateCoordinator):
             self._data[const.WS_CONSUMPTIONS_MONTH] = monthly
             self._data["ws_maximeter"] = self._edata.data["maximeter"]
 
+            # Per-month debug dump so user can see the exact figures that feed the
+            # solar panel and the statistics pipeline.
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                for rec in monthly:
+                    _LOGGER.debug(
+                        "%s: monthly %s kwh=%.3f surplus_kwh=%.3f generation_kwh=%.3f "
+                        "self_consumption_kwh=%.3f | energy=%.4f power=%.4f surplus_term=%.4f "
+                        "others=%.4f savings=%.4f total=%.4f",
+                        self.scups,
+                        rec.get("datetime").strftime("%Y-%m") if rec.get("datetime") else "?",
+                        rec.get("value_kWh") or 0.0,
+                        rec.get("surplus_kWh") or 0.0,
+                        rec.get("generation_kWh") or 0.0,
+                        rec.get("self_consumption_kWh") or 0.0,
+                        rec.get("energy_term") or 0.0,
+                        rec.get("power_term") or 0.0,
+                        rec.get("surplus_term") or 0.0,
+                        rec.get("others_term") or 0.0,
+                        rec.get("savings_term") or 0.0,
+                        rec.get("value_eur") or 0.0,
+                    )
+
             # update state
             with contextlib.suppress(AttributeError):
                 self._data["state"] = self._edata.attributes[

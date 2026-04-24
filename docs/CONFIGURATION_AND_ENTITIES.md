@@ -49,14 +49,53 @@ Se definen precios base y, según el caso:
 - precios fijos P1/P2/P3
 - compensación de excedentes
 
-`schemas.py` expone las compensaciones `surplus_p1_kwh_eur`, `surplus_p2_kwh_eur`
-y `surplus_p3_kwh_eur` cuando `surplus` está activado. `__init__.py` y
-`config_flow.py` empaquetan las tres en `pricing_rules` para que
-`BillingProcessor` aplique la tarifa correcta en cada periodo.
+`schemas.py` expone un único campo `surplus_p1_kwh_eur` cuando `surplus` está
+activado (la compensación simplificada española aplica el mismo €/kWh en todos
+los periodos). En `__init__.py` y `config_flow.py` ese único valor se refleja a
+`surplus_p2_kwh_eur` y `surplus_p3_kwh_eur` al construir `pricing_rules`, de modo
+que `BillingProcessor` recibe los 3 campos que espera y expone la variable
+derivada `surplus_kwh_eur` a las fórmulas.
 
 La UI de opciones trata la compensación de excedentes como no soportada en modo
 PVPC: el bloque de compensación queda oculto cuando `pvpc` está activado para no
 presentar una configuración que el backend no soporta de forma coherente.
+
+### Paso `formulas`
+
+Cada término (`energy`, `power`, `others`, `surplus`) es una expresión Jinja2
+evaluada por BillingProcessor hora a hora. La pantalla muestra:
+
+- Descripción con la lista de variables disponibles (`kwh`, `surplus_kwh`,
+  `kwh_eur`, `surplus_kwh_eur`, `p1_kw`, `p2_kw`, precios configurados, impuestos).
+- `data_description` por campo con la fórmula sugerida — distinta según PVPC o
+  tarifa plana.
+
+Las fórmulas por defecto nuevas (const.py):
+
+- Energía: `electricity_tax * iva_tax * kwh_eur * kwh`
+- Potencia: `electricity_tax * iva_tax * (p1_kw * p1_kw_year_eur + p2_kw * p2_kw_year_eur) / 365 / 24`
+- Otros: `iva_tax * meter_month_eur / 30 / 24`
+- Excedente (flat): `surplus_kwh * surplus_kwh_eur`
+- Excedente (PVPC): `surplus_kwh * kwh_eur`
+
+La compensación simplificada NO lleva IVA ni impuesto eléctrico encima: se
+descuenta al gross del importe energético antes de repercutir IVA sobre el neto.
+Por eso el término `surplus_term` sale "limpio" y el total es una suma directa
+de términos positivos y negativos.
+
+### Paso `confirm`
+
+Presenta la simulación al usuario. El desglose se muestra por dos vías
+complementarias para garantizar visibilidad incluso si el frontend no renderiza
+`description`:
+
+1. Etiquetas del selector de mes enriquecidas con
+   `MM/YYYY · Total X € · E ... · P ... · −Vert ... · ☀...`.
+2. Descripción markdown con `description_placeholders` (desglose completo con
+   impuestos incluidos).
+
+Además, el usuario puede elegir la fecha `apply_from` desde la que recalcular
+las facturas, lo que dispara una re-importación selectiva al confirmar.
 
 ### Paso `formulas`
 

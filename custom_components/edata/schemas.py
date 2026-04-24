@@ -159,26 +159,13 @@ def OPTIONS_STEP_COSTS(
         schema.update(nonpvpc_schema)
         
     if effective_surplus:
+        # Single surplus price: in Spain the simplified compensation applies the
+        # same €/kWh to all periods. Only P1 is shown; P2/P3 are mirrored from P1
+        # when building pricing_rules.
         schema.update({
             vol.Required(
                 const.PRICE_SURP_P1_KWH,
                 default=prev_options.get(const.PRICE_SURP_P1_KWH, const.DEFAULT_PRICE_SURPLUS_KWH),
-            ): sel.NumberSelector(
-                config=sel.NumberSelectorConfig(
-                    min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
-                )
-            ),
-            vol.Required(
-                const.PRICE_SURP_P2_KWH,
-                default=prev_options.get(const.PRICE_SURP_P2_KWH, const.DEFAULT_PRICE_SURPLUS_KWH),
-            ): sel.NumberSelector(
-                config=sel.NumberSelectorConfig(
-                    min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
-                )
-            ),
-            vol.Required(
-                const.PRICE_SURP_P3_KWH,
-                default=prev_options.get(const.PRICE_SURP_P3_KWH, const.DEFAULT_PRICE_SURPLUS_KWH),
             ): sel.NumberSelector(
                 config=sel.NumberSelectorConfig(
                     min=0, step=1e-3, mode=sel.NumberSelectorMode.BOX
@@ -262,27 +249,52 @@ def OPTIONS_STEP_CONFIRM(
 ) -> dict[str, typing.Any]:
     """Build the options confirm step dict schema.
 
-    The billing breakdown is shown read-only via description_placeholders in
-    the translation. Only the month selector, apply_from and confirm are editable.
+    The billing breakdown is shown in two places:
+      1. As the month dropdown option labels (always renders).
+      2. Via description_placeholders in the translation (markdown, richer).
     """
     schema: dict = {}
+
+    def _fmt(v: typing.Any) -> str:
+        try:
+            return f"{float(v):.2f}"
+        except (TypeError, ValueError):
+            return "0.00"
 
     # Month selector — submitting the form with confirm=False re-renders the
     # description with the newly selected month's data.
     if sim_all:
-        month_options = [
-            {
-                "value": rec["datetime"].strftime("%Y-%m"),
-                "label": rec["datetime"].strftime("%m/%Y"),
-            }
-            for rec in sim_all
-        ]
-        selected_month = (
-            sim["datetime"].strftime("%Y-%m") if sim else month_options[-1]["value"]
-        )
-        schema[vol.Required(const.CONF_SIM_MONTH, default=selected_month)] = (
-            sel.SelectSelector({"options": month_options, "mode": "dropdown"})
-        )
+        month_options = []
+        for rec in sim_all:
+            _dt = rec.get("datetime")
+            if _dt is None:
+                continue
+            _month = _dt.strftime("%m/%Y")
+            _total = _fmt(rec.get("value_eur"))
+            _energy = _fmt(rec.get("energy_term"))
+            _power = _fmt(rec.get("power_term"))
+            _surplus = _fmt(rec.get("surplus_term"))
+            _savings = _fmt(rec.get("savings_term"))
+            # Encode whole breakdown in the label so it ALWAYS renders, even
+            # if the frontend doesn't pick up description_placeholders.
+            label = (
+                f"{_month} · Total {_total} € · "
+                f"E {_energy} · P {_power} · "
+                f"−Vert {_surplus} · ☀{_savings}"
+            )
+            month_options.append({
+                "value": _dt.strftime("%Y-%m"),
+                "label": label,
+            })
+        if month_options:
+            selected_month = (
+                sim["datetime"].strftime("%Y-%m")
+                if sim and sim.get("datetime")
+                else month_options[-1]["value"]
+            )
+            schema[vol.Required(const.CONF_SIM_MONTH, default=selected_month)] = (
+                sel.SelectSelector({"options": month_options, "mode": "dropdown"})
+            )
 
     if apply_from:
         schema[vol.Required(const.CONF_APPLYFROM, default=apply_from)] = (
