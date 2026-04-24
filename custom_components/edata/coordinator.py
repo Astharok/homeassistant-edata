@@ -1913,7 +1913,11 @@ class EdataCoordinator(DataUpdateCoordinator):
     async def update_billing(self, options: dict, since: datetime | None = None):
         """Update billing rules and recalculate."""
 
-        _LOGGER.info("%s: updating costs since %s", self.scups, since.isoformat())
+        _LOGGER.info(
+            "%s: updating costs since %s",
+            self.scups,
+            since.isoformat() if since is not None else "<beginning>",
+        )
         billing_enabled = options.get(const.CONF_BILLING, False)
 
         if billing_enabled:

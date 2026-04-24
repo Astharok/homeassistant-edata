@@ -108,25 +108,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "(open Options -> Formulas -> Confirm to persist).",
                 scups, _orig_surplus, _migrated_surplus,
             )
+            # Signal that a full cost rebuild is needed after first refresh:
+            # cost_* arrays persisted on disk still contain values computed
+            # with the buggy formula; process_data() does NOT rewrite existing
+            # rows, only appends new ones. update_billing(since=None) wipes
+            # and recomputes from scratch.
+            _force_cost_rebuild = True
             persistent_notification.async_create(
                 hass,
                 (
                     f"La integración edata ha detectado una fórmula de compensación "
-                    f"de excedentes obsoleta y la ha corregido automáticamente en memoria.\n\n"
+                    f"de excedentes obsoleta y la ha corregido automáticamente.\n\n"
                     f"**Anterior**: `{_orig_surplus}`\n"
                     f"**Nueva**: `{_migrated_surplus}`\n\n"
-                    f"**Para recalcular la factura histórica** (panel Energía y "
-                    f"tarjeta edata-card), abre *Configuración → Dispositivos y "
-                    f"servicios → edata → Configurar → Fórmulas → Continuar*, "
-                    f"pon una fecha antigua en «Recalcular facturas desde...» y "
-                    f"marca «Confirmar cambios». El valor de la fórmula quedará "
-                    f"guardado y los costes históricos se recalcularán."
+                    f"La factura histórica (tarjeta edata-card y panel Energía) "
+                    f"se está recalculando automáticamente en segundo plano. "
+                    f"Cuando termine, abre *Configuración → Dispositivos y "
+                    f"servicios → edata → Configurar → Fórmulas → Continuar → "
+                    f"Confirmar cambios* para persistir la fórmula corregida "
+                    f"en disco."
                 ),
                 title="edata: fórmula de excedentes corregida",
                 notification_id=f"edata_surplus_formula_migrated_{scups}",
             )
+        else:
+            _force_cost_rebuild = False
     else:
         pricing_rules = None
+        _force_cost_rebuild = False
 
     coordinator = await EdataCoordinator.async_setup(
         hass,
@@ -143,10 +152,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     @callback
     async def async_first_refresh(*args):
         """Force the component to assess the first refresh."""
-        hass.async_create_task(coordinator.async_refresh())
+        await coordinator.async_refresh()
+        # If we auto-migrated the surplus formula, existing cost_* rows on disk
+        # were computed with the buggy formula. Trigger a full rebuild so the
+        # websocket (dashboard) and LTS stats (Energy tab) both reflect the
+        # corrected formula across the entire history.
+        if _force_cost_rebuild:
+            _LOGGER.warning(
+                "%s: surplus formula migrated — rebuilding full cost history "
+                "so dashboard and Energy tab show corrected values.",
+                scups,
+            )
+            try:
+                await coordinator.update_billing(entry.options, since=None)
+            except Exception:
+                _LOGGER.exception(
+                    "%s: forced cost rebuild after surplus migration failed; "
+                    "run Options -> Formulas -> Confirm with an old 'Recalcular "
+                    "facturas desde...' date to retry manually.",
+                    scups,
+                )
 
     if hass.state == CoreState.running:
-        await async_first_refresh()
+        hass.async_create_task(async_first_refresh())
     else:
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, async_first_refresh)
 
