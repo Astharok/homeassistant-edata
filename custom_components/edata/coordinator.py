@@ -897,15 +897,17 @@ class EdataCoordinator(DataUpdateCoordinator):
                     )
                 )
                 
-            if (const.STAT_ID_SURPLUS_EUR(self.id) not in self._last_stats_dt) or (
-                dt_found >= self._last_stats_dt[const.STAT_ID_SURPLUS_EUR(self.id)]
-            ):
-                new_stats[const.STAT_ID_SURPLUS_EUR(self.id)].append(
-                    StatisticData(
-                        start=dt_found,
-                        state=data["surplus_term"],
+            _hourly_surplus = data.get("surplus_term")
+            if _hourly_surplus is not None:
+                if (const.STAT_ID_SURPLUS_EUR(self.id) not in self._last_stats_dt) or (
+                    dt_found >= self._last_stats_dt[const.STAT_ID_SURPLUS_EUR(self.id)]
+                ):
+                    new_stats[const.STAT_ID_SURPLUS_EUR(self.id)].append(
+                        StatisticData(
+                            start=dt_found,
+                            state=_hourly_surplus,
+                        )
                     )
-                )
 
             if tariff == "p1":
                 stat_id_energy_eur_px = const.STAT_ID_P1_ENERGY_EUR(self.id)
@@ -944,6 +946,28 @@ class EdataCoordinator(DataUpdateCoordinator):
                         state=data["value_eur"],
                     )
                 )
+
+        # If hourly records lack surplus_term, fall back to monthly aggregates.
+        # Some versions of the edata library only populate surplus_term in monthly/
+        # daily aggregates, not in individual hourly records.
+        _surplus_id = const.STAT_ID_SURPLUS_EUR(self.id)
+        if not new_stats[_surplus_id]:
+            _LOGGER.warning(
+                "%s: surplus_term absent from hourly cost records — "
+                "building surplus cost stat from monthly aggregates",
+                self.scups,
+            )
+            for cost_rec in self._edata.data.get("cost_monthly_sum", []):
+                _surplus_val = cost_rec.get("surplus_term") or 0.0
+                if _surplus_val <= 0:
+                    continue
+                _dt = dt_util.as_local(cost_rec["datetime"])
+                if (_surplus_id not in self._last_stats_dt) or (
+                    _dt >= self._last_stats_dt[_surplus_id]
+                ):
+                    new_stats[_surplus_id].append(
+                        StatisticData(start=_dt, state=_surplus_val)
+                    )
 
         for stat_id in new_stats:
             for stat_data in new_stats[stat_id]:

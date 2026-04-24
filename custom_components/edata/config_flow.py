@@ -153,14 +153,15 @@ async def simulate_last_month_billing(
         len(pvpc),
     )
 
+    _bp_input = {
+        "consumptions": consumptions_clean,
+        "contracts": contracts,
+        "prices": pvpc,
+        "rules": pricing_rules,
+    }
     try:
-        proc = BillingProcessor(
-            {
-                "consumptions": consumptions_clean,
-                "contracts": contracts,
-                "prices": pvpc,
-                "rules": pricing_rules,
-            }
+        proc = await hass.async_add_executor_job(
+            BillingProcessor, _bp_input
         )
         _LOGGER.warning(
             "simulate_billing: BillingProcessor OK monthly=%d",
