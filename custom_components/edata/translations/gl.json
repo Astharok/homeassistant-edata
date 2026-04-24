@@ -132,9 +132,16 @@
       },
       "confirm": {
         "title": "Simulación (con impostos)",
-        "description": "**{month}** — {delta_h} horas\n\nDesglose estimado (impostos incluídos):\n- Potencia contratada: **{power_term} €**\n- Enerxía importada: **{energy_term} €**\n- Outros (contador, bono social): **{others_term} €**\n- Compensación excedentes: **−{surplus_term} €**\n- Aforro autoconsumo ☀: **{savings_term} €**\n\n**Factura total estimada: {value_eur} €**",
+        "description": "Revisa abaixo o desglose estimado do mes seleccionado. Cambia o mes no despregable para simular outro. Marca «Confirmar cambios» só cando o resultado sexa correcto.",
         "data": {
           "sim_month": "Mes a simular",
+          "info_month": "Mes · horas facturadas",
+          "info_energy_term": "Enerxía importada (con impostos)",
+          "info_power_term": "Potencia contratada (con impostos)",
+          "info_others_term": "Outros (contador, bono social, con impostos)",
+          "info_surplus_term": "Compensación excedentes (réstase)",
+          "info_savings_term": "Aforro autoconsumo ☀",
+          "info_value_eur": "Factura total estimada",
           "apply_from": "Recalcular facturas desde...",
           "confirm": "Confirmar cambios"
         }

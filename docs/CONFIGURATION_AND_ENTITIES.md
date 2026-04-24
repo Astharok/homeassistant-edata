@@ -85,14 +85,23 @@ de términos positivos y negativos.
 
 ### Paso `confirm`
 
-Presenta la simulación al usuario. El desglose se muestra por dos vías
-complementarias para garantizar visibilidad incluso si el frontend no renderiza
-`description`:
+Presenta la simulación como un formulario con el desglose completo como campos
+de solo lectura (`ConstantSelector`). Se muestran, para el mes seleccionado,
+estos términos:
 
-1. Etiquetas del selector de mes enriquecidas con
-   `MM/YYYY · Total X € · E ... · P ... · −Vert ... · ☀...`.
-2. Descripción markdown con `description_placeholders` (desglose completo con
-   impuestos incluidos).
+- Mes · horas facturadas
+- Energía importada (con impuestos)
+- Potencia contratada (con impuestos)
+- Otros (contador, bono social, con impuestos)
+- Compensación excedentes (se resta)
+- Ahorro autoconsumo ☀
+- Total factura estimada
+
+El selector de mes es un dropdown (`MM/YYYY — Total X €`) que, al cambiar y
+enviar el formulario sin confirmar, re-renderiza los campos read-only con los
+valores del nuevo mes. La `description` del paso es sólo un texto guía; los
+números viven siempre en los campos del formulario, por lo que se ven aunque
+el frontend no renderice placeholders markdown.
 
 Además, el usuario puede elegir la fecha `apply_from` desde la que recalcular
 las facturas, lo que dispara una re-importación selectiva al confirmar.

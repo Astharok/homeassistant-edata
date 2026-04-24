@@ -249,20 +249,24 @@ def OPTIONS_STEP_CONFIRM(
 ) -> dict[str, typing.Any]:
     """Build the options confirm step dict schema.
 
-    The billing breakdown is shown in two places:
-      1. As the month dropdown option labels (always renders).
-      2. Via description_placeholders in the translation (markdown, richer).
+    The billing breakdown of the currently selected month is rendered as a
+    series of read-only fields (ConstantSelector) so the desglose siempre
+    aparece como formulario, independientemente de que el frontend de HA
+    renderice o no la `description` markdown con placeholders.
     """
     schema: dict = {}
 
-    def _fmt(v: typing.Any) -> str:
+    def _fmt(v: typing.Any, decimals: int = 2) -> str:
         try:
-            return f"{float(v):.2f}"
+            return f"{float(v):.{decimals}f}"
         except (TypeError, ValueError):
             return "0.00"
 
+    def _eur(v: typing.Any) -> str:
+        return f"{_fmt(v)} €"
+
     # Month selector — submitting the form with confirm=False re-renders the
-    # description with the newly selected month's data.
+    # breakdown with the newly selected month's data.
     if sim_all:
         month_options = []
         for rec in sim_all:
@@ -271,20 +275,11 @@ def OPTIONS_STEP_CONFIRM(
                 continue
             _month = _dt.strftime("%m/%Y")
             _total = _fmt(rec.get("value_eur"))
-            _energy = _fmt(rec.get("energy_term"))
-            _power = _fmt(rec.get("power_term"))
-            _surplus = _fmt(rec.get("surplus_term"))
-            _savings = _fmt(rec.get("savings_term"))
-            # Encode whole breakdown in the label so it ALWAYS renders, even
-            # if the frontend doesn't pick up description_placeholders.
-            label = (
-                f"{_month} · Total {_total} € · "
-                f"E {_energy} · P {_power} · "
-                f"−Vert {_surplus} · ☀{_savings}"
-            )
+            # Short label: mes + total. El desglose completo aparece debajo
+            # como campos read-only del propio formulario.
             month_options.append({
                 "value": _dt.strftime("%Y-%m"),
-                "label": label,
+                "label": f"{_month} — {_total} €",
             })
         if month_options:
             selected_month = (
@@ -294,6 +289,30 @@ def OPTIONS_STEP_CONFIRM(
             )
             schema[vol.Required(const.CONF_SIM_MONTH, default=selected_month)] = (
                 sel.SelectSelector({"options": month_options, "mode": "dropdown"})
+            )
+
+    # Read-only breakdown of the currently selected month as form fields.
+    # Uses ConstantSelector so values render inline and cannot be edited.
+    if sim:
+        _month_str = (
+            sim["datetime"].strftime("%m/%Y")
+            if sim.get("datetime")
+            else "—"
+        )
+        _delta_h = str(sim.get("delta_h", 0))
+
+        _fields: list[tuple[str, str]] = [
+            ("info_month", f"{_month_str}  ·  {_delta_h} h"),
+            ("info_energy_term", _eur(sim.get("energy_term"))),
+            ("info_power_term", _eur(sim.get("power_term"))),
+            ("info_others_term", _eur(sim.get("others_term"))),
+            ("info_surplus_term", f"−{_eur(sim.get('surplus_term'))}"),
+            ("info_savings_term", _eur(sim.get("savings_term"))),
+            ("info_value_eur", _eur(sim.get("value_eur"))),
+        ]
+        for _key, _value in _fields:
+            schema[vol.Optional(_key, default=_value)] = sel.ConstantSelector(
+                {"value": _value, "label": _value}
             )
 
     if apply_from:
