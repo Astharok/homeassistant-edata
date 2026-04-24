@@ -1,5 +1,159 @@
 # Modelo de datos y estadísticas
 
+> Última actualización: 2026-04-24
+
+## Flujo de datos
+
+El recorrido principal de datos es:
+
+1. Datadis expone datos remotos por CUPS.
+2. La librería `e-data` los descarga y persiste en disco (JSON local).
+3. `EdataCoordinator` enriquece los datos en memoria con el sidecar de extras.
+4. Se vuelca a disco (sin los extras, para respetar el schema de la librería).
+5. Se sincronizan estadísticas externas al `recorder` de HA.
+6. Sensores, websockets y frontend consumen atributos y estadísticas.
+
+## Persistencia local
+
+### Fichero principal (librería e-data)
+
+- Ruta: `<STORAGE>/edata/edata_<cups>.json`
+- Gestionado por `e-data` via `dump_storage` / `load_storage`.
+- Contiene: `consumptions`, `contracts`, `supplies`, `maximeter`, `pvpc`, `cost_hourly_sum`, etc.
+- Schema: `EdataSchema` (voluptuous, `PREVENT_EXTRA`).  
+  **Importante**: las claves extra (`generation_kWh`, `self_consumption_kWh`, `obtain_method`)
+  deben estar ausentes al llamar a `dump_storage`, `BillingProcessor` o `process_data`.
+  El context manager `_clean_consumptions()` en `coordinator.py` gestiona esto.
+
+### Sidecar de extras (coordinador)
+
+- Ruta: `<STORAGE>/edata/edata_<cups>_extras.json`
+- Gestionado directamente por el coordinador.
+- Contiene los campos que la librería descarta al persistir: `generation_kWh`,
+  `self_consumption_kWh`, `obtain_method`.
+- Formato: `{"ISO_datetime_str": {"generation_kWh": float, "self_consumption_kWh": float, "obtain_method": str}}`
+- Acumulativo: cada ciclo añade entradas nuevas sin borrar las antiguas.
+- Se lee siempre en un executor (sin bloquear el event loop).
+
+### Backups rotativos (coordinador)
+
+- Ruta: `<STORAGE>/edata/backups/edata_<cups>_<YYYY-MM-DD>.json`
+- Copia diaria del fichero principal tras cada descarga exitosa.
+- Retención: 30 días.
+- Usado por `_async_force_reimport_period` cuando hay snapshot disponible,
+  evitando llamadas adicionales a Datadis.
+
+## Ventana de caché
+
+| Modo | Meses | Cuándo se usa |
+|---|---|---|
+| Normal (`CACHE_MONTHS_SHORT`) | 13 | Ciclo periódico de actualización |
+| Forzado (`CACHE_MONTHS_LONG`) | 23 | Botón de importación completa |
+
+La ventana comienza el día 1 del mes N-cache_months y termina el fin del día anterior.
+
+## Estadísticas externas registradas
+
+Todas usan `async_add_external_statistics`. Las de tipo kWh llevan `unit_class="energy"`
+para compatibilidad con HA 2026.11+.
+
+### Consumo energético
+
+| Statistic ID | Tipo | Unidad |
+|---|---|---|
+| `edata:<scups>_consumption` | sum, no mean | kWh |
+| `edata:<scups>_p1_consumption` | sum, no mean | kWh |
+| `edata:<scups>_p2_consumption` | sum, no mean | kWh |
+| `edata:<scups>_p3_consumption` | sum, no mean | kWh |
+
+### Excedente / vertido
+
+| Statistic ID | Tipo | Unidad |
+|---|---|---|
+| `edata:<scups>_surplus` | sum, no mean | kWh |
+
+### Solar (nuevo — sidecar)
+
+| Statistic ID | Fuente | Tipo | Unidad |
+|---|---|---|---|
+| `edata:<scups>_generation` | `generation_kWh` del sidecar | sum, no mean | kWh |
+| `edata:<scups>_self_consumption` | `self_consumption_kWh` del sidecar | sum, no mean | kWh |
+
+Configurar en el panel Energía de HA: `edata:<scups>_generation` como fuente solar.
+
+### Maxímetro
+
+| Statistic ID | Tipo | Unidad |
+|---|---|---|
+| `edata:<scups>_maximeter` | mean, no sum | kW |
+| `edata:<scups>_p1_maximeter` | mean, no sum | kW |
+| `edata:<scups>_p2_maximeter` | mean, no sum | kW |
+
+### Costes (sólo si facturación habilitada)
+
+| Statistic ID | Descripción | Unidad |
+|---|---|---|
+| `edata:<scups>_cost` | Total por hora | € |
+| `edata:<scups>_p1/p2/p3_cost` | Total por periodo | € |
+| `edata:<scups>_energy_cost` | Término de energía | € |
+| `edata:<scups>_p1/p2/p3_energy_cost` | Energía por periodo | € |
+| `edata:<scups>_power_cost` | Término de potencia | € |
+| `edata:<scups>_surplus_cost` | Compensación excedentes | € |
+
+## Enriquecimiento del websocket mensual
+
+`_enrich_monthly_with_sidecar()` añade a cada registro mensual:
+
+| Campo | Origen |
+|---|---|
+| `generation_kWh` | Sidecar, agregado por ciclo de facturación |
+| `self_consumption_kWh` | Sidecar, agregado por ciclo de facturación |
+| `energy_term` | `cost_monthly_sum` de la librería |
+| `power_term` | `cost_monthly_sum` de la librería |
+| `surplus_term` | `cost_monthly_sum` de la librería |
+| `others_term` | `cost_monthly_sum` de la librería |
+| `value_eur` | `cost_monthly_sum` de la librería |
+
+La agregación sidecar respeta `cycle_start_day` (offset de ciclo de facturación).
+
+## Fuente de lectura para histórico
+
+`utils.py` usa dos estrategias:
+
+- memoria o datos locales recientes (`fetch_changes_from_mem`)
+- estadísticas del recorder (`fetch_changes_from_stats`)
+
+La selección ocurre en `fetch_changes()`, que intenta primero lectura desde memoria
+y cae a estadísticas si no es suficiente.
+
+## Agregaciones soportadas por websocket
+
+`hour`, `day`, `week`, `month`, `year`. Para `year` se reagrupan resultados mensuales
+con `group_by_year()`.
+
+## Integridad y reparación de estadísticas
+
+`coordinator.py` implementa:
+
+- `_update_last_stats_summary`: obtiene el último punto persistido por `statistic_id`.
+- `check_statistics_integrity`: compara suma de estadísticas con suma de datos fuente.
+- `rebuild_statistics`: borra y reconstruye desde un `from_dt` dado.
+- `_async_force_reimport_period`: reimportación de un rango completo, usando snapshot
+  local si existe o rellamando a Datadis.
+
+Todos estos métodos usan `_clean_consumptions()` antes de llamar a la librería.
+
+## Context manager `_clean_consumptions`
+
+```python
+@contextlib.contextmanager
+def _clean_consumptions(consumptions):
+    # Pop _EXTRAS_KEYS on enter, restore on exit (even on exception)
+```
+
+Aplicado a todos los call sites de `process_data`, `process_cost` y `dump_storage`
+para evitar errores `voluptuous.Invalid` por `PREVENT_EXTRA`.
+
 ## Flujo de datos
 
 El recorrido principal de datos es:

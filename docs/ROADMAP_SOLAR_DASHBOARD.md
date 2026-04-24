@@ -1,7 +1,7 @@
 # Roadmap: Datos solares completos + Panel de facturación
 
-> Estado: **PLANIFICACIÓN** — No implementar hasta autorización explícita.
-> Última actualización: 2026-04-23
+> Estado: **✅ IMPLEMENTADO** — 2026-04-24  
+> Última actualización: 2026-04-24
 
 ---
 

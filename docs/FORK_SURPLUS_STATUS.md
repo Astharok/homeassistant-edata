@@ -1,5 +1,83 @@
 # Estado del fork y soporte de vertido
 
+> Última actualización: 2026-04-24
+
+## Objetivo del fork
+
+Mantener una variante propia de `homeassistant-edata` con soporte completo de
+datos solares (generación, autoconsumo, vertido), facturación real española y
+panel Lovelace de dashboard energético.
+
+---
+
+## Estado actual (2026-04-24)
+
+### ✅ Completado en esta rama
+
+| Área | Implementación |
+|---|---|
+| Sidecar `generation_kWh` + `self_consumption_kWh` | Persistencia acumulativa, aplicación en memoria cada ciclo |
+| LTS stats `edata:<scups>_generation` / `_self_consumption` | `StatisticMeanType.NONE`, `has_sum=True`, `unit_class="energy"` |
+| Enriquecimiento websocket mensual | `_enrich_monthly_with_sidecar()` añade solar + terms de coste |
+| Panel `edata-solar-card` | Donuts, tabla factura, histórico, chip ahorro |
+| Fórmula surplus PVPC corregida | Usaba `surplus_p1_kwh_eur` (None → 0); ahora usa `kwh_eur` (precio spot) |
+| Fix `TemplateSelector` → `TextSelector` | Evitaba UndefinedError en fórmulas al guardar |
+| Fix `PREVENT_EXTRA` generalizado | `_clean_consumptions()` context manager en todos los call sites |
+| Lecturas sidecar en executor | Sin bloqueo del event loop |
+
+### ⚠️ Huecos abiertos
+
+#### Hueco 1 — Compensación excedentes por tarifa P2/P3
+
+`const.py` define `PRICE_SURP_P2_KWH`, `PRICE_SURP_P3_KWH` pero:
+- `schemas.py` sólo expone `surplus_p1_kwh_eur` en el formulario
+- `config_flow.py` y `__init__.py` sólo empaquetan `surplus_p1_kwh_eur`
+- La fórmula PVPC por defecto compensa con precio spot (correcto para simplificada)
+- La fórmula custom sólo tiene un campo `surplus_formula` global
+
+Si el usuario quiere compensación diferenciada P1/P2/P3, no tiene UI para ello.
+
+#### Hueco 2 — Validación end-to-end automatizada
+
+No hay tests automáticos. La validación es manual en HA con datos reales.
+
+#### Hueco 3 — Websocket `surplus` sin selector de tarifa
+
+`edata/ws/surplus` devuelve excedente total sin discriminar por periodo.
+Para uso avanzado con compensación diferenciada habría que ampliar el contrato.
+
+---
+
+## Lectura recomendada antes de tocar vertido
+
+1. `docs/CONFIGURATION_AND_ENTITIES.md`
+2. `docs/DATA_MODEL_AND_STATISTICS.md`
+3. `docs/FRONTEND_AND_WEBSOCKETS.md`
+
+---
+
+## Roadmap pendiente
+
+### Fase siguiente — Cerrar compensación por tarifa (opcional)
+
+- Añadir `surplus_p2_kwh_eur` y `surplus_p3_kwh_eur` en `schemas.py` y `config_flow.py`
+- Alinear la fórmula surplus con una expresión condicional por periodo, o
+  mantener un único campo de precio y documentar la limitación explícitamente
+
+### Fase siguiente — Tests automáticos
+
+- Documentar procedimiento de prueba reproducible con datos de ejemplo
+- Verificar alta, descarga, sensores, estadísticas y tarjeta
+
+---
+
+## Criterio de mantenimiento
+
+Cada tarea sobre excedentes o datos solares debe actualizar este documento con:
+- estado alcanzado
+- huecos cerrados
+- nuevos riesgos detectados
+
 ## Objetivo del fork
 
 El objetivo de este fork es independizarse del repositorio original y mantener una variante propia de `homeassistant-edata` con soporte de datos de vertido o excedentes bien integrado y probado.
