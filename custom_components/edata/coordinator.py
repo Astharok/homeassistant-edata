@@ -422,7 +422,9 @@ class EdataCoordinator(DataUpdateCoordinator):
                 "consumptions_daily_sum"
             ]
             monthly = list(self._edata.data["consumptions_monthly_sum"])
-            monthly = self._enrich_monthly_with_sidecar(monthly)
+            monthly = await self.hass.async_add_executor_job(
+                self._enrich_monthly_with_sidecar, monthly
+            )
             self._data[const.WS_CONSUMPTIONS_MONTH] = monthly
             self._data["ws_maximeter"] = self._edata.data["maximeter"]
 
@@ -754,6 +756,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                     source=const.DOMAIN,
                     statistic_id=stat_id,
                     unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                    unit_class="energy",
                 )
             elif stat_id in self.cost_stat_ids:
                 metadata = StatisticMetaData(
@@ -914,6 +917,15 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         await self._add_statistics(new_stats)
 
+    def _read_sidecar_sync(self) -> dict:
+        """Read the extras sidecar JSON synchronously (safe to run in executor)."""
+        sidecar_path = self._get_extras_sidecar_path()
+        extras: dict[str, dict] = {}
+        with contextlib.suppress(Exception):
+            with open(sidecar_path, encoding="utf8") as fh:
+                extras = json.load(fh)
+        return extras
+
     async def _update_solar_stats(self) -> None:
         """Build LTS statistics for solar generation and self-consumption from sidecar."""
 
@@ -923,11 +935,9 @@ class EdataCoordinator(DataUpdateCoordinator):
             if stat_id not in self._last_stats_sum:
                 self._last_stats_sum[stat_id] = 0
 
-        sidecar_path = self._get_extras_sidecar_path()
-        extras: dict[str, dict] = {}
-        with contextlib.suppress(Exception):
-            with open(sidecar_path, encoding="utf8") as fh:
-                extras = json.load(fh)
+        extras: dict[str, dict] = await self.hass.async_add_executor_job(
+            self._read_sidecar_sync
+        )
 
         if not extras:
             _LOGGER.debug("%s: no solar sidecar data, skipping solar stats", self.scups)
@@ -1041,11 +1051,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         We also join cost_monthly_sum fields (energy_term, power_term, surplus_term,
         others_term, value_eur) so the frontend needs only one websocket call.
         """
-        sidecar_path = self._get_extras_sidecar_path()
-        extras: dict[str, dict] = {}
-        with contextlib.suppress(Exception):
-            with open(sidecar_path, encoding="utf8") as fh:
-                extras = json.load(fh)
+        extras: dict[str, dict] = self._read_sidecar_sync()
 
         # Aggregate sidecar by the same billing-cycle month key used in monthly records.
         # Monthly records have datetime = first day of billing cycle (after cycle_start_day offset).
