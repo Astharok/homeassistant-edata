@@ -99,42 +99,71 @@ async def simulate_last_month_billing(
     """Validate the user input from the 'step formulas'."""
 
     coordinator_id = config_entry.data["scups"].lower()
-    pricing_rules = PricingRules(
-        {
-            x: data[x]
-            for x in data
-            if x
-            in (
-                const.CONF_CYCLE_START_DAY,
-                const.PRICE_P1_KW_YEAR,
-                const.PRICE_P2_KW_YEAR,
-                const.PRICE_P1_KWH,
-                const.PRICE_P2_KWH,
-                const.PRICE_P3_KWH,
-                const.PRICE_SURP_P1_KWH,
-                const.PRICE_METER_MONTH,
-                const.PRICE_MARKET_KW_YEAR,
-                const.PRICE_ELECTRICITY_TAX,
-                const.PRICE_IVA_TAX,
-                const.BILLING_ENERGY_FORMULA,
-                const.BILLING_POWER_FORMULA,
-                const.BILLING_OTHERS_FORMULA,
-                const.BILLING_SURPLUS_FORMULA,
-            )
-        }
+
+    _LOGGER.warning(
+        "simulate_billing: coordinator_id=%s data_keys=%s",
+        coordinator_id,
+        list(data.keys()),
     )
-    proc = BillingProcessor(
-        {
-            "consumptions": hass.data[const.DOMAIN][coordinator_id]["edata"].data[
-                "consumptions"
-            ],
-            "contracts": hass.data[const.DOMAIN][coordinator_id]["edata"].data[
-                "contracts"
-            ],
-            "prices": hass.data[const.DOMAIN][coordinator_id]["edata"].data["pvpc"],
-            "rules": pricing_rules,
-        }
+
+    pricing_rules_input = {
+        x: data[x]
+        for x in data
+        if x
+        in (
+            const.CONF_CYCLE_START_DAY,
+            const.PRICE_P1_KW_YEAR,
+            const.PRICE_P2_KW_YEAR,
+            const.PRICE_P1_KWH,
+            const.PRICE_P2_KWH,
+            const.PRICE_P3_KWH,
+            const.PRICE_SURP_P1_KWH,
+            const.PRICE_METER_MONTH,
+            const.PRICE_MARKET_KW_YEAR,
+            const.PRICE_ELECTRICITY_TAX,
+            const.PRICE_IVA_TAX,
+            const.BILLING_ENERGY_FORMULA,
+            const.BILLING_POWER_FORMULA,
+            const.BILLING_OTHERS_FORMULA,
+            const.BILLING_SURPLUS_FORMULA,
+        )
+    }
+    _LOGGER.warning("simulate_billing: pricing_rules_input=%s", pricing_rules_input)
+
+    try:
+        pricing_rules = PricingRules(pricing_rules_input)
+        _LOGGER.warning("simulate_billing: PricingRules OK")
+    except Exception:
+        _LOGGER.exception("simulate_billing: PricingRules() raised")
+        raise
+
+    edata_obj = hass.data[const.DOMAIN][coordinator_id]["edata"]
+    consumptions = edata_obj.data.get("consumptions", [])
+    contracts = edata_obj.data.get("contracts", [])
+    pvpc = edata_obj.data.get("pvpc", [])
+    _LOGGER.warning(
+        "simulate_billing: consumptions=%d contracts=%d pvpc=%d",
+        len(consumptions),
+        len(contracts),
+        len(pvpc),
     )
+
+    try:
+        proc = BillingProcessor(
+            {
+                "consumptions": consumptions,
+                "contracts": contracts,
+                "prices": pvpc,
+                "rules": pricing_rules,
+            }
+        )
+        _LOGGER.warning(
+            "simulate_billing: BillingProcessor OK monthly=%d",
+            len(proc.output.get("monthly", [])),
+        )
+    except Exception:
+        _LOGGER.exception("simulate_billing: BillingProcessor() raised")
+        raise
 
     elements = len(proc.output["monthly"])
     if elements > 1:
@@ -289,13 +318,24 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     .replace(J2_EXPR_TOKENS[1].strip(), "")
                     .strip()
                 )
-            self.sim = await simulate_last_month_billing(
-                self.hass, self.config_entry, self.inputs
+            _LOGGER.warning(
+                "async_step_formulas: user_input received keys=%s stripped_values=%s",
+                list(user_input.keys()),
+                {k: self.inputs[k] for k in user_input},
             )
+            try:
+                self.sim = await simulate_last_month_billing(
+                    self.hass, self.config_entry, self.inputs
+                )
+                _LOGGER.warning("async_step_formulas: simulation OK sim=%s", self.sim)
+            except Exception as e:
+                _LOGGER.exception("async_step_formulas: simulate_last_month_billing raised: %s", e)
+                raise
             try:
                 return await self.async_step_confirm()
             except Exception as e:
-                _LOGGER.exception(e)
+                _LOGGER.exception("async_step_formulas: async_step_confirm raised: %s", e)
+                raise
 
         return self.async_show_form(
             step_id="formulas",
