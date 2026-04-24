@@ -686,6 +686,15 @@ class EdataCoordinator(DataUpdateCoordinator):
         )
         get_db_instance(self.hass).async_clear_statistics(to_clear)
 
+        # Reset tracking for every cleared stat to epoch.
+        # The restore loop below will overwrite with the real last value if there
+        # was data before from_dt. Without this reset, _last_stats_dt would still
+        # hold the pre-clear timestamps and _update_*_stats would skip all records.
+        _epoch = dt_util.as_utc(datetime(1970, 1, 1))
+        for stat_id in to_clear:
+            self._last_stats_dt[stat_id] = _epoch
+            self._last_stats_sum[stat_id] = 0
+
         # now restore old statistics
         for stat_id in old_data:
             if stat_id not in to_clear:
