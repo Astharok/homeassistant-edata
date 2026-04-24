@@ -73,6 +73,43 @@ DEFAULT_PVPC_BILLING_FORMULAS = {
     BILLING_SURPLUS_FORMULA: "surplus_kwh * kwh_eur",
 }
 
+# Legacy surplus formulas that were shipped or suggested in previous versions
+# and are now known to be wrong (they apply electricity_tax * iva_tax to the
+# surplus compensation, which in the Spanish simplified scheme is actually
+# discounted BEFORE taxes, or they reference surplus_p1_kwh_eur as a hardcoded
+# variable ignoring P2/P3). Any saved formula matching these strings will be
+# auto-migrated to the correct default when building pricing_rules.
+LEGACY_SURPLUS_FORMULAS: tuple[str, ...] = (
+    # Very old default: hardcoded p1, with taxes
+    "electricity_tax * iva_tax * surplus_kwh * surplus_p1_kwh_eur",
+    "electricity_tax * iva_tax * surplus_p1_kwh_eur * surplus_kwh",
+    # Suggested (wrongly) in formulas-step translations of some versions:
+    # uses kwh_eur (import price of the period!) instead of surplus_kwh_eur
+    "electricity_tax * iva_tax * kwh_eur * surplus_kwh",
+    "electricity_tax * iva_tax * surplus_kwh * kwh_eur",
+)
+
+
+def migrate_surplus_formula(formula: str | None, *, pvpc: bool = False) -> str:
+    """Return a corrected surplus_formula, migrating legacy buggy ones.
+
+    If the stored formula matches a known legacy/buggy pattern (applying
+    taxes to the surplus compensation or using kwh_eur instead of
+    surplus_kwh_eur for non-PVPC), it is replaced with the recommended
+    default for the current tariff type. User-customised formulas that
+    don't match the legacy list are returned unchanged.
+    """
+    if not formula:
+        return (
+            DEFAULT_PVPC_BILLING_FORMULAS if pvpc else DEFAULT_CUSTOM_BILLING_FORMULAS
+        )[BILLING_SURPLUS_FORMULA]
+    _stripped = formula.strip()
+    if _stripped in LEGACY_SURPLUS_FORMULAS:
+        return (
+            DEFAULT_PVPC_BILLING_FORMULAS if pvpc else DEFAULT_CUSTOM_BILLING_FORMULAS
+        )[BILLING_SURPLUS_FORMULA]
+    return formula
+
 DATA_STATE = "state"
 DATA_ATTRIBUTES = "attributes"
 DATA_SUPPLIES = "supplies"

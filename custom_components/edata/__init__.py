@@ -92,6 +92,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if _surp_p1 is not None:
             pricing_rules[const.PRICE_SURP_P2_KWH] = _surp_p1
             pricing_rules[const.PRICE_SURP_P3_KWH] = _surp_p1
+
+        # Auto-migrate legacy buggy surplus_formula (pre-fix versions suggested
+        # formulas that multiplied the compensation by electricity_tax * iva_tax
+        # and/or used kwh_eur — the import price — instead of surplus_kwh_eur).
+        _orig_surplus = pricing_rules.get(const.BILLING_SURPLUS_FORMULA)
+        _migrated_surplus = const.migrate_surplus_formula(
+            _orig_surplus, pvpc=bool(entry.options.get(const.CONF_PVPC, False))
+        )
+        if _migrated_surplus != _orig_surplus:
+            pricing_rules[const.BILLING_SURPLUS_FORMULA] = _migrated_surplus
+            _LOGGER.warning(
+                "%s: auto-migrated legacy surplus_formula %r -> %r "
+                "(open Options -> Formulas -> Confirm to persist).",
+                scups, _orig_surplus, _migrated_surplus,
+            )
     else:
         pricing_rules = None
 

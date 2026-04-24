@@ -135,6 +135,19 @@ async def simulate_last_month_billing(
     if _surp_p1 is not None:
         pricing_rules_input[const.PRICE_SURP_P2_KWH] = _surp_p1
         pricing_rules_input[const.PRICE_SURP_P3_KWH] = _surp_p1
+
+    # Auto-migrate legacy buggy surplus_formula — see const.migrate_surplus_formula.
+    _orig_surplus = pricing_rules_input.get(const.BILLING_SURPLUS_FORMULA)
+    _migrated_surplus = const.migrate_surplus_formula(
+        _orig_surplus,
+        pvpc=bool(config_entry.options.get(const.CONF_PVPC, False)),
+    )
+    if _migrated_surplus != _orig_surplus:
+        pricing_rules_input[const.BILLING_SURPLUS_FORMULA] = _migrated_surplus
+        _LOGGER.warning(
+            "simulate_billing: auto-migrated legacy surplus_formula %r -> %r",
+            _orig_surplus, _migrated_surplus,
+        )
     _LOGGER.info("simulate_billing: pricing_rules_input=%s", pricing_rules_input)
 
     try:
@@ -260,8 +273,14 @@ async def simulate_last_month_billing(
         proc_sc = await hass.async_add_executor_job(BillingProcessor, _bp_sc_input)
         monthly_sc = proc_sc.output.get("monthly", [])
         _LOGGER.debug("simulate_billing: BillingProcessor (sc) OK monthly=%d", len(monthly_sc))
-    except Exception:
-        _LOGGER.exception("simulate_billing: BillingProcessor (sc) raised — savings_term will be 0")
+    except Exception as _exc:  # noqa: BLE001
+        _sample = consumptions_with_sc[0] if consumptions_with_sc else None
+        _LOGGER.error(
+            "simulate_billing: BillingProcessor (sc) raised %s: %s — savings_term will be 0. "
+            "consumptions_with_sc=%d sample=%s",
+            type(_exc).__name__, _exc, len(consumptions_with_sc), _sample,
+            exc_info=True,
+        )
 
     savings_map = {
         rec_sc["datetime"]: (rec_sc.get("energy_term") or 0.0)
