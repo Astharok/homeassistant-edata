@@ -1245,11 +1245,14 @@ class EdataCoordinator(DataUpdateCoordinator):
                     if _c_dt is None:
                         continue
                     _c_iso = _c_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+                    # Only record a period if there was actual grid consumption
+                    # in that hour. Hours fully covered by solar have all
+                    # value_pX_kWh == 0 and must be resolved by datetime.
                     if (c.get("value_p1_kWh") or 0.0) > 0:
                         _period_lkp[_c_iso] = "p1"
                     elif (c.get("value_p2_kWh") or 0.0) > 0:
                         _period_lkp[_c_iso] = "p2"
-                    else:
+                    elif (c.get("value_p3_kWh") or 0.0) > 0:
                         _period_lkp[_c_iso] = "p3"
                 for _iso_key, _fields in extras.items():
                     _sc = _fields.get("self_consumption_kWh") or 0.0
@@ -1262,7 +1265,15 @@ class EdataCoordinator(DataUpdateCoordinator):
                     _day = _dt_e.replace(hour=0, minute=0, second=0, microsecond=0)
                     _mk = (_day - timedelta(days=cycle_offset)).replace(day=1).isoformat()
                     _c_iso = _dt_e.replace(minute=0, second=0, microsecond=0).isoformat()
-                    _period = _period_lkp.get(_c_iso, "p3")
+                    # Primary: period of the hour derived from the official
+                    # 2.0TD calendar (python-edata utils). Fallback: period of
+                    # the grid consumption in that same hour (used when the
+                    # tariff helper is not available for any reason).
+                    _period = None
+                    with contextlib.suppress(Exception):
+                        _period = utils.get_pvpc_tariff(_dt_e)
+                    if _period not in ("p1", "p2", "p3"):
+                        _period = _period_lkp.get(_c_iso, "p3")
                     _price = _prices.get(_period, _prices.get("p3", 0.0))
                     savings_agg[_mk] = savings_agg.get(_mk, 0.0) + _sc * _price
                     _mk_per = savings_agg_by_period.setdefault(
