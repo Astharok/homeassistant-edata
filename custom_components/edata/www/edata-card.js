@@ -715,6 +715,11 @@ class EdataSolarCard extends LitElement {
     this._monthly = [];
     this._monthIdx = -1; // -1 = most recent
     this._charts = {};
+    this._refreshTimer = null;
+    // Periodic fallback in case the entity's last_updated doesn't tick
+    // (e.g. an hour with no change). 5 minutes keeps the panel fresh without
+    // hammering the coordinator.
+    this._REFRESH_INTERVAL_MS = 5 * 60 * 1000;
   }
 
   static get properties() {
@@ -738,15 +743,53 @@ class EdataSolarCard extends LitElement {
     this._config = config;
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    // Start the periodic refresh as a safety net. The main driver is still
+    // the hass setter which fires on every state update.
+    this._startRefreshTimer();
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._stopRefreshTimer();
+    // Destroy chart instances so they are fully rebuilt on reconnection.
+    Object.values(this._charts).forEach(c => { try { c.destroy(); } catch (_) {} });
+    this._charts = {};
+  }
+
+  _startRefreshTimer() {
+    this._stopRefreshTimer();
+    this._refreshTimer = setInterval(() => {
+      if (this._hass && this._config?.entity && !this._fetching) {
+        this._fetchData();
+      }
+    }, this._REFRESH_INTERVAL_MS);
+  }
+
+  _stopRefreshTimer() {
+    if (this._refreshTimer) {
+      clearInterval(this._refreshTimer);
+      this._refreshTimer = null;
+    }
+  }
+
   set hass(hass) {
     this._hass = hass;
-    // Re-fetch whenever the edata sensor state changes so the panel refreshes
-    // automatically after each coordinator update (including the first one after
-    // HA restart, which may complete after the card is first rendered).
+    // Re-fetch whenever the edata sensor receives an update so the panel
+    // refreshes automatically after each coordinator cycle, without waiting
+    // for a HA restart or the card to be re-mounted. We watch BOTH state AND
+    // last_updated:
+    //   - state changes only when last_registered_date rolls over (daily)
+    //   - last_updated bumps on every coordinator refresh, even when state
+    //     value is identical — this is the primary trigger for intraday
+    //     live-update.
     const entity = this._config?.entity;
-    const state = entity ? hass?.states?.[entity]?.state : undefined;
-    if (state !== this._lastEntityState) {
-      this._lastEntityState = state;
+    const entState = entity ? hass?.states?.[entity] : undefined;
+    if (!entState) return;
+    const sig = `${entState.state}|${entState.last_updated}`;
+    if (sig !== this._lastEntitySig) {
+      this._lastEntitySig = sig;
       if (!this._fetching) {
         this._fetchData();
       }
@@ -757,14 +800,28 @@ class EdataSolarCard extends LitElement {
     if (this._fetching) return;
     this._fetching = true;
     try {
-      this._monthly = await this._hass.callWS({
+      const fresh = await this._hass.callWS({
         type: "edata/consumptions/monthly",
         scups: this._scups,
       });
-      this._monthIdx = this._monthly.length - 1;
+      // Preserve user navigation: if the monthIdx was pinned to the last
+      // month (-1 sentinel or end of array), keep pointing to the newest.
+      // Otherwise keep the same absolute month.
+      const prevRec = this._monthly[this._monthIdx];
+      this._monthly = fresh || [];
+      if (prevRec?.datetime) {
+        const prevIso = new Date(prevRec.datetime).toISOString().slice(0, 7);
+        const idx = this._monthly.findIndex(r => {
+          if (!r?.datetime) return false;
+          return new Date(r.datetime).toISOString().slice(0, 7) === prevIso;
+        });
+        this._monthIdx = idx >= 0 ? idx : this._monthly.length - 1;
+      } else {
+        this._monthIdx = this._monthly.length - 1;
+      }
       this.requestUpdate();
       await this.updateComplete;
-      this._renderAllCharts();
+      this._scheduleCharts();
     } catch (e) {
       console.error("edata-solar-card: fetch error", e);
     } finally {
