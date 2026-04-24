@@ -129,15 +129,9 @@
       },
       "confirm": {
         "title": "Simulation (with taxes)",
+        "description": "**{month}** — {delta_h} hours\n\nEstimated breakdown (taxes included):\n- Contracted power: **{power_term} €**\n- Imported energy: **{energy_term} €**\n- Others (meter, social bonus): **{others_term} €**\n- Surplus compensation: **−{surplus_term} €**\n- Self-consumption savings ☀: **{savings_term} €**\n\n**Estimated total bill: {value_eur} €**",
         "data": {
           "sim_month": "Month to simulate",
-          "delta_h": "Period hours",
-          "value_eur": "Total bill (€)",
-          "energy_term": "Energy term (€)",
-          "power_term": "Power term (€)",
-          "surplus_term": "Surplus compensation (€, subtracted)",
-          "savings_term": "Self-consumption savings (€, solar energy not purchased)",
-          "others_term": "Others — meter, social bonus (€)",
           "apply_from": "Update bills since...",
           "confirm": "Confirm changes"
         }

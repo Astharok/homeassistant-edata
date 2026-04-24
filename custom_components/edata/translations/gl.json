@@ -127,15 +127,9 @@
       },
       "confirm": {
         "title": "Simulación (con impostos)",
+        "description": "**{month}** — {delta_h} horas\n\nDesglose estimado (impostos incluídos):\n- Potencia contratada: **{power_term} €**\n- Enerxía importada: **{energy_term} €**\n- Outros (contador, bono social): **{others_term} €**\n- Compensación excedentes: **−{surplus_term} €**\n- Aforro autoconsumo ☀: **{savings_term} €**\n\n**Factura total estimada: {value_eur} €**",
         "data": {
           "sim_month": "Mes a simular",
-          "delta_h": "Horas do período",
-          "value_eur": "Factura total (€)",
-          "energy_term": "Termo de enerxía (€)",
-          "power_term": "Termo de potencia (€)",
-          "surplus_term": "Compensación por excedentes (€, réstase)",
-          "savings_term": "Aforro por autoconsumo (€, enerxía solar non comprada)",
-          "others_term": "Outros — contador, bono social (€)",
           "apply_from": "Recalcular facturas desde...",
           "confirm": "Confirmar cambios"
         }

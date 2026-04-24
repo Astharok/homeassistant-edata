@@ -439,12 +439,30 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         self.sim = rec
                         break
 
+        def _fmt(v, decimals=2):
+            if v is None:
+                return "—"
+            return f"{float(v):.{decimals}f}"
+
+        sim = self.sim or {}
+        placeholders = {
+            "month": sim.get("datetime").strftime("%m/%Y") if sim.get("datetime") else "—",
+            "delta_h": str(sim.get("delta_h", 0)),
+            "energy_term": _fmt(sim.get("energy_term")),
+            "power_term": _fmt(sim.get("power_term")),
+            "surplus_term": _fmt(sim.get("surplus_term")),
+            "savings_term": _fmt(sim.get("savings_term")),
+            "others_term": _fmt(sim.get("others_term")),
+            "value_eur": _fmt(sim.get("value_eur")),
+        }
+
         try:
             return self.async_show_form(
                 step_id="confirm",
                 data_schema=vol.Schema(
                     sch.OPTIONS_STEP_CONFIRM(self.sim, self.sim_all, self._confirm_apply_from)
                 ),
+                description_placeholders=placeholders,
             )
         except Exception as e:
             _LOGGER.exception(e)

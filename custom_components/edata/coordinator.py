@@ -1142,6 +1142,47 @@ class EdataCoordinator(DataUpdateCoordinator):
             agg[month_key]["generation_kWh"] += fields.get("generation_kWh") or 0.0
             agg[month_key]["self_consumption_kWh"] += fields.get("self_consumption_kWh") or 0.0
 
+        # --- Per-period self-consumption savings ---
+        # For each hour of self_consumption, determine which tariff period it belongs to
+        # (P1/P2/P3) by matching against the cleaned consumption records, then apply the
+        # corresponding kwh price * taxes to compute the cost avoided.
+        savings_agg: dict[str, float] = {}
+        with contextlib.suppress(Exception):
+            if self.billing_rules is not None:
+                _iva = float(self.billing_rules[const.PRICE_IVA_TAX] or 1.0)
+                _etax = float(self.billing_rules[const.PRICE_ELECTRICITY_TAX] or 1.0)
+                _prices = {
+                    "p1": float(self.billing_rules[const.PRICE_P1_KWH] or 0.0) * _iva * _etax,
+                    "p2": float(self.billing_rules[const.PRICE_P2_KWH] or 0.0) * _iva * _etax,
+                    "p3": float(self.billing_rules[const.PRICE_P3_KWH] or 0.0) * _iva * _etax,
+                }
+                # Build hourly period lookup from cleaned consumptions
+                _period_lkp: dict[str, str] = {}
+                for c in self._edata.data.get("consumptions", []):
+                    _c_dt = c.get("datetime")
+                    if _c_dt is None:
+                        continue
+                    _c_iso = _c_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+                    if (c.get("value_p1_kWh") or 0.0) > 0:
+                        _period_lkp[_c_iso] = "p1"
+                    elif (c.get("value_p2_kWh") or 0.0) > 0:
+                        _period_lkp[_c_iso] = "p2"
+                    else:
+                        _period_lkp[_c_iso] = "p3"
+                for _iso_key, _fields in extras.items():
+                    _sc = _fields.get("self_consumption_kWh") or 0.0
+                    if _sc <= 0:
+                        continue
+                    try:
+                        _dt_e = datetime.fromisoformat(_iso_key)
+                    except (ValueError, TypeError):
+                        continue
+                    _day = _dt_e.replace(hour=0, minute=0, second=0, microsecond=0)
+                    _mk = (_day - timedelta(days=cycle_offset)).replace(day=1).isoformat()
+                    _c_iso = _dt_e.replace(minute=0, second=0, microsecond=0).isoformat()
+                    _period = _period_lkp.get(_c_iso, "p3")
+                    savings_agg[_mk] = savings_agg.get(_mk, 0.0) + _sc * _prices.get(_period, _prices.get("p3", 0.0))
+
         # Build cost monthly lookup keyed by month ISO datetime string
         cost_by_month: dict[str, dict] = {}
         for cost_rec in self._edata.data.get("cost_monthly_sum", []):
@@ -1175,6 +1216,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                     rec["surplus_term"] = round(c.get("surplus_term") or 0.0, 4)
                     rec["others_term"] = round(c.get("others_term") or 0.0, 4)
                     rec["value_eur"] = round(c.get("value_eur") or 0.0, 4)
+                rec["savings_term"] = round(savings_agg.get(month_key, 0.0), 4)
             enriched.append(rec)
         return enriched
 

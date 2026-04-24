@@ -246,13 +246,13 @@ def OPTIONS_STEP_CONFIRM(
 ) -> dict[str, typing.Any]:
     """Build the options confirm step dict schema.
 
-    Shows a month selector (re-renders on change), a breakdown of all billing
-    terms for the selected month, and the apply_from / confirm fields.
+    The billing breakdown is shown read-only via description_placeholders in
+    the translation. Only the month selector, apply_from and confirm are editable.
     """
     schema: dict = {}
 
-    # Month selector — submitting the form with confirm=False re-renders with
-    # the newly selected month's data.
+    # Month selector — submitting the form with confirm=False re-renders the
+    # description with the newly selected month's data.
     if sim_all:
         month_options = [
             {
@@ -267,47 +267,6 @@ def OPTIONS_STEP_CONFIRM(
         schema[vol.Required(const.CONF_SIM_MONTH, default=selected_month)] = (
             sel.SelectSelector({"options": month_options, "mode": "dropdown"})
         )
-
-    if sim is not None:
-        schema[vol.Required(const.CONF_DELTA_H, default=sim.get("delta_h", 0))] = (
-            vol.Coerce(int)
-        )
-        schema[
-            vol.Required(
-                const.CONF_ENERGY_TERM,
-                default=round(sim.get("energy_term") or 0.0, 4),
-            )
-        ] = vol.Coerce(float)
-        schema[
-            vol.Required(
-                const.CONF_POWER_TERM,
-                default=round(sim.get("power_term") or 0.0, 4),
-            )
-        ] = vol.Coerce(float)
-        schema[
-            vol.Required(
-                const.CONF_SURPLUS_TERM,
-                default=round(sim.get("surplus_term") or 0.0, 4),
-            )
-        ] = vol.Coerce(float)
-        schema[
-            vol.Required(
-                const.CONF_SAVINGS_TERM,
-                default=round(sim.get("savings_term") or 0.0, 4),
-            )
-        ] = vol.Coerce(float)
-        schema[
-            vol.Required(
-                const.CONF_OTHERS_TERM,
-                default=round(sim.get("others_term") or 0.0, 4),
-            )
-        ] = vol.Coerce(float)
-        schema[
-            vol.Required(
-                const.CONF_VALUE_EUR,
-                default=round(sim.get("value_eur") or 0.0, 4),
-            )
-        ] = vol.Coerce(float)
 
     if apply_from:
         schema[vol.Required(const.CONF_APPLYFROM, default=apply_from)] = (
