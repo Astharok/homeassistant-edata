@@ -24,6 +24,10 @@ panel Lovelace de dashboard energético.
 | Fix `TemplateSelector` → `TextSelector` | Evitaba UndefinedError en fórmulas al guardar |
 | Fix `PREVENT_EXTRA` generalizado | `_clean_consumptions()` context manager en todos los call sites |
 | Lecturas sidecar en executor | Sin bloqueo del event loop |
+| Fix `KeyError` en `options_update_listener` | Al desactivar billing, `update_billing_since` ausente → crash; corregido con `.get()` |
+| Fix `UnboundLocalError` en `_update_cost_stats` | Si `get_pvpc_tariff` devuelve valor inesperado → variables sin asignar; corregido con `else: continue` |
+| Fix `from_now` ignorado en `ws_get_cost` | El parámetro se calculaba pero no se pasaba a `get_costs_history`; corregido |
+| Fix `_stat_id` sin asignar en `utils.py` | Tres funciones: `get_consumptions_history`, `get_costs_history`, `get_maximeter_history`; corregido con `else: return []` |
 
 ### ⚠️ Huecos abiertos
 

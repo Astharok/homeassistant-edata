@@ -274,6 +274,9 @@ async def get_consumptions_history(
         _stat_id = const.STAT_ID_P2_KWH(scups)
     elif tariff == "p3":
         _stat_id = const.STAT_ID_P3_KWH(scups)
+    else:
+        _LOGGER.warning("get_consumptions_history: unexpected tariff '%s'", tariff)
+        return []
 
     return await fetch_changes(hass, _stat_id, scups, aggr, records, now_as_ref)
 
@@ -301,6 +304,9 @@ async def get_maximeter_history(
         _stat_id = const.STAT_ID_P1_KW(scups)
     elif tariff == "p2":
         _stat_id = const.STAT_ID_P2_KW(scups)
+    else:
+        _LOGGER.warning("get_maximeter_history: unexpected tariff '%s'", tariff)
+        return []
 
     data = await get_db_instance(hass).async_add_executor_job(
         statistics_during_period,
@@ -334,6 +340,9 @@ async def get_costs_history(
         _stat_id = const.STAT_ID_P2_EUR(scups)
     elif tariff == "p3":
         _stat_id = const.STAT_ID_P3_EUR(scups)
+    else:
+        _LOGGER.warning("get_costs_history: unexpected tariff '%s'", tariff)
+        return []
 
     return await fetch_changes(hass, _stat_id, scups, aggr, records, now_as_ref)
 

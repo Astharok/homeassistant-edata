@@ -916,6 +916,14 @@ class EdataCoordinator(DataUpdateCoordinator):
             elif tariff == "p3":
                 stat_id_energy_eur_px = const.STAT_ID_P3_ENERGY_EUR(self.id)
                 stat_id_eur_px = const.STAT_ID_P3_EUR(self.id)
+            else:
+                _LOGGER.warning(
+                    "%s: unexpected tariff value '%s' at %s, skipping per-tariff cost stats",
+                    self.scups,
+                    tariff,
+                    dt_found,
+                )
+                continue
 
             if (stat_id_energy_eur_px not in self._last_stats_dt) or (
                 dt_found >= self._last_stats_dt[stat_id_energy_eur_px]

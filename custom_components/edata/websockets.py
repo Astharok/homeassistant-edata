@@ -159,7 +159,7 @@ async def ws_get_cost(hass: HomeAssistant, connection, msg):
     _now_as_ref = msg.get("from_now", False)
 
     try:
-        data = await get_costs_history(hass, _scups, _tariff, _aggr, _records)
+        data = await get_costs_history(hass, _scups, _tariff, _aggr, _records, _now_as_ref)
     except KeyError:
         data = []
         _LOGGER.info("Stats not found for CUPS %s", _scups)

@@ -143,7 +143,6 @@ async def options_update_listener(hass: HomeAssistant, entry: ConfigEntry):
     data = hass.data[const.DOMAIN][scups.lower()]
     coor: EdataCoordinator = data["coordinator"]
 
-    await coor.update_billing(
-        entry.options,
-        dt_util.as_local(dt_util.parse_datetime(entry.options["update_billing_since"])),
-    )
+    since_str = entry.options.get("update_billing_since")
+    since = dt_util.as_local(dt_util.parse_datetime(since_str)) if since_str else None
+    await coor.update_billing(entry.options, since)
