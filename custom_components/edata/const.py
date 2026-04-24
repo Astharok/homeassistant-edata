@@ -26,6 +26,7 @@ CONF_ENERGY_TERM = "energy_term"
 CONF_POWER_TERM = "power_term"
 CONF_SURPLUS_TERM = "surplus_term"
 CONF_OTHERS_TERM = "others_term"
+CONF_SAVINGS_TERM = "savings_term"
 CONF_DELTA_H = "delta_h"
 
 # pricing settings

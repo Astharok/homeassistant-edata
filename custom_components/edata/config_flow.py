@@ -172,9 +172,57 @@ async def simulate_last_month_billing(
         raise
 
     monthly = proc.output.get("monthly", [])
+
+    # --- Compute self-consumption savings via a second BillingProcessor run ---
+    # Build consumptions_with_sc: same as consumptions_clean but with
+    # self_consumption_kWh added back into the correct period field so that
+    # BillingProcessor applies the same per-period energy formula to it.
+    _SC_KEYS_SET = {"generation_kWh", "self_consumption_kWh", "obtain_method"}
+    consumptions_with_sc = []
+    for rec in consumptions:
+        sc = rec.get("self_consumption_kWh") or 0.0
+        clean = {k: v for k, v in rec.items() if k not in _SC_KEYS_SET}
+        if sc > 0:
+            if (clean.get("value_p1_kWh") or 0.0) > 0:
+                clean["value_p1_kWh"] = (clean.get("value_p1_kWh") or 0.0) + sc
+            elif (clean.get("value_p2_kWh") or 0.0) > 0:
+                clean["value_p2_kWh"] = (clean.get("value_p2_kWh") or 0.0) + sc
+            elif (clean.get("value_p3_kWh") or 0.0) > 0:
+                clean["value_p3_kWh"] = (clean.get("value_p3_kWh") or 0.0) + sc
+            else:
+                # Zero grid consumption (fully covered by solar): period unknown; use P3 as conservative lower bound
+                clean["value_p3_kWh"] = (clean.get("value_p3_kWh") or 0.0) + sc
+            clean["value_kWh"] = (clean.get("value_kWh") or 0.0) + sc
+        consumptions_with_sc.append(clean)
+
+    monthly_sc = []
+    _bp_sc_input = {
+        "consumptions": consumptions_with_sc,
+        "contracts": contracts,
+        "prices": pvpc,
+        "rules": pricing_rules,
+    }
+    try:
+        proc_sc = await hass.async_add_executor_job(BillingProcessor, _bp_sc_input)
+        monthly_sc = proc_sc.output.get("monthly", [])
+        _LOGGER.warning("simulate_billing: BillingProcessor (sc) OK monthly=%d", len(monthly_sc))
+    except Exception:
+        _LOGGER.exception("simulate_billing: BillingProcessor (sc) raised — savings_term will be 0")
+
+    savings_map = {
+        rec_sc["datetime"]: (rec_sc.get("energy_term") or 0.0)
+        for rec_sc in monthly_sc
+    }
+    for rec in monthly:
+        actual_energy = rec.get("energy_term") or 0.0
+        sc_energy = savings_map.get(rec["datetime"])
+        rec["savings_term"] = round(
+            (sc_energy - actual_energy) if sc_energy is not None else 0.0, 4
+        )
+
     for i, rec in enumerate(monthly):
         _LOGGER.warning(
-            "simulate_billing: [%d] %s delta_h=%d energy=%.4f power=%.4f surplus=%.4f others=%.4f total=%.4f",
+            "simulate_billing: [%d] %s delta_h=%d energy=%.4f power=%.4f surplus=%.4f others=%.4f savings=%.4f total=%.4f",
             i,
             rec["datetime"].strftime("%m/%Y"),
             rec.get("delta_h", 0),
@@ -182,6 +230,7 @@ async def simulate_last_month_billing(
             rec.get("power_term") or 0,
             rec.get("surplus_term") or 0,
             rec.get("others_term") or 0,
+            rec.get("savings_term") or 0,
             rec.get("value_eur") or 0,
         )
     if not monthly:

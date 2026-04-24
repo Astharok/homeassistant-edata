@@ -133,6 +133,7 @@
           "energy_term": "Terme d'energia (€)",
           "power_term": "Terme de potència (€)",
           "surplus_term": "Compensació per excedents (€, es resta)",
+          "savings_term": "Estalvi per autoconsum (€, energia solar no comprada)",
           "others_term": "Altres — comptador, bo social (€)",
           "apply_from": "Recalcular factures des de...",
           "confirm": "Confirmar canvis"

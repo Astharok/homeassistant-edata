@@ -292,6 +292,12 @@ def OPTIONS_STEP_CONFIRM(
         ] = vol.Coerce(float)
         schema[
             vol.Required(
+                const.CONF_SAVINGS_TERM,
+                default=round(sim.get("savings_term") or 0.0, 4),
+            )
+        ] = vol.Coerce(float)
+        schema[
+            vol.Required(
                 const.CONF_OTHERS_TERM,
                 default=round(sim.get("others_term") or 0.0, 4),
             )

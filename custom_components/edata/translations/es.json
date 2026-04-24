@@ -136,6 +136,7 @@
           "energy_term": "Término de energía (€)",
           "power_term": "Término de potencia (€)",
           "surplus_term": "Compensación por excedentes (€, se resta)",
+          "savings_term": "Ahorro por autoconsumo (€, energía solar no comprada)",
           "others_term": "Otros gastos — contador, bono social (€)",
           "apply_from": "Recalcular facturas desde...",
           "confirm": "Confirmar cambios"
