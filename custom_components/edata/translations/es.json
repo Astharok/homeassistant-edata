@@ -134,13 +134,13 @@
       },
       "confirm": {
         "title": "Simulación (con impuestos)",
-        "description": "Revisa abajo el desglose estimado del mes seleccionado. Cambia el mes en el desplegable para simular otro. Marca «Confirmar cambios» sólo cuando el resultado te cuadre.",
+        "description": "**Mes mostrado: {month}** ({delta_h} h)\n\n| Concepto | Importe |\n|---|---:|\n| Energía importada | **{energy_term} €** |\n| Potencia contratada | **{power_term} €** |\n| Otros (contador, bono social) | **{others_term} €** |\n| Compensación excedentes | **−{surplus_term} €** |\n| Ahorro autoconsumo ☀ | **{savings_term} €** |\n| **TOTAL factura estimada** | **{value_eur} €** |\n\n⚠ **Para cambiar de mes**: elige otro en el desplegable y pulsa *Enviar* **sin marcar** «Confirmar cambios». El formulario se recargará con los datos del nuevo mes.\n\nCuando los valores sean correctos, marca «Confirmar cambios» y pulsa *Enviar* para guardar.",
         "data": {
-          "sim_month": "Mes a simular",
+          "sim_month": "Mes a simular (cambia y pulsa Enviar para recargar)",
           "info_month": "Mes · horas facturadas",
-          "info_energy_term": "Energía importada (impuestos incluidos)",
-          "info_power_term": "Potencia contratada (impuestos incluidos)",
-          "info_others_term": "Otros (contador, bono social, impuestos incluidos)",
+          "info_energy_term": "Energía importada (con impuestos)",
+          "info_power_term": "Potencia contratada (con impuestos)",
+          "info_others_term": "Otros (contador, bono social, con impuestos)",
           "info_surplus_term": "Compensación excedentes (se resta)",
           "info_savings_term": "Ahorro autoconsumo ☀",
           "info_value_eur": "Total factura estimada",

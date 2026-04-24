@@ -131,7 +131,7 @@
       },
       "confirm": {
         "title": "Simulació (amb impostos)",
-        "description": "Revisa a baix el desglossament estimat del mes seleccionat. Canvia el mes al desplegable per simular-ne un altre. Marca «Confirmar canvis» només quan el resultat sigui correcte.",
+        "description": "**Mes mostrat: {month}** ({delta_h} h)\n\n| Concepte | Import |\n|---|---:|\n| Energia importada | **{energy_term} €** |\n| Potència contractada | **{power_term} €** |\n| Altres (comptador, bo social) | **{others_term} €** |\n| Compensació excedents | **−{surplus_term} €** |\n| Estalvi autoconsum ☀ | **{savings_term} €** |\n| **TOTAL factura estimada** | **{value_eur} €** |\n\n⚠ **Per canviar de mes**: tria'n un altre al desplegable i prem *Enviar* **sense marcar** «Confirmar canvis». El formulari es recarregarà amb el nou mes.\n\nQuan els valors siguin correctes, marca «Confirmar canvis» i prem *Enviar* per desar.",
         "data": {
           "sim_month": "Mes a simular",
           "info_month": "Mes · hores facturades",

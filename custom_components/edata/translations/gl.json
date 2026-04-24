@@ -132,7 +132,7 @@
       },
       "confirm": {
         "title": "Simulación (con impostos)",
-        "description": "Revisa abaixo o desglose estimado do mes seleccionado. Cambia o mes no despregable para simular outro. Marca «Confirmar cambios» só cando o resultado sexa correcto.",
+        "description": "**Mes amosado: {month}** ({delta_h} h)\n\n| Concepto | Importe |\n|---|---:|\n| Enerxía importada | **{energy_term} €** |\n| Potencia contratada | **{power_term} €** |\n| Outros (contador, bono social) | **{others_term} €** |\n| Compensación excedentes | **−{surplus_term} €** |\n| Aforro autoconsumo ☀ | **{savings_term} €** |\n| **TOTAL factura estimada** | **{value_eur} €** |\n\n⚠ **Para cambiar de mes**: escolle outro no despregable e preme *Enviar* **sen marcar** «Confirmar cambios». O formulario recargarase co novo mes.\n\nCando os valores sexan correctos, marca «Confirmar cambios» e preme *Enviar* para gardar.",
         "data": {
           "sim_month": "Mes a simular",
           "info_month": "Mes · horas facturadas",

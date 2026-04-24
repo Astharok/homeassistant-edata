@@ -134,9 +134,9 @@
       },
       "confirm": {
         "title": "Simulation (with taxes)",
-        "description": "Review the estimated breakdown for the selected month below. Change the month dropdown to re-simulate. Confirm only once the numbers look right.",
+        "description": "**Showing month: {month}** ({delta_h} h)\n\n| Item | Amount |\n|---|---:|\n| Imported energy | **{energy_term} €** |\n| Contracted power | **{power_term} €** |\n| Others (meter, social bonus) | **{others_term} €** |\n| Surplus compensation | **−{surplus_term} €** |\n| Self-consumption savings ☀ | **{savings_term} €** |\n| **TOTAL estimated bill** | **{value_eur} €** |\n\n⚠ **To change month**: pick another one in the dropdown and click *Submit* **without** ticking «Confirm changes». The form will reload with the new month's figures.\n\nWhen values look right, tick «Confirm changes» and click *Submit* to save.",
         "data": {
-          "sim_month": "Month to simulate",
+          "sim_month": "Month to simulate (change and click Submit to reload)",
           "info_month": "Month · billable hours",
           "info_energy_term": "Imported energy (taxes in)",
           "info_power_term": "Contracted power (taxes in)",

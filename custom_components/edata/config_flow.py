@@ -553,7 +553,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             "value_eur": _fmt(sim.get("value_eur")),
         }
 
-        _LOGGER.warning(
+        _LOGGER.info(
             "async_step_confirm: showing form sim=%s sim_all=%d placeholders=%s",
             bool(sim),
             len(self.sim_all or []),

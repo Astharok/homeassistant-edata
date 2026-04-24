@@ -249,10 +249,16 @@ def OPTIONS_STEP_CONFIRM(
 ) -> dict[str, typing.Any]:
     """Build the options confirm step dict schema.
 
-    The billing breakdown of the currently selected month is rendered as a
-    series of read-only fields (ConstantSelector) so the desglose siempre
-    aparece como formulario, independientemente de que el frontend de HA
-    renderice o no la `description` markdown con placeholders.
+    The breakdown of the currently selected month is shown as a series of
+    ``ConstantSelector`` fields, each carrying its own human-readable label
+    in the selector config (HA renders the label from the selector config
+    reliably across versions, whereas translation-based labels for
+    ``ConstantSelector`` are not applied in every HA release).
+
+    The month dropdown is positioned first; when the user picks a different
+    month and submits *without* marking ``confirm``, the flow re-renders
+    the form with the new month's numbers. HA config flow forms do not
+    support live updates on selector change.
     """
     schema: dict = {}
 
@@ -265,8 +271,8 @@ def OPTIONS_STEP_CONFIRM(
     def _eur(v: typing.Any) -> str:
         return f"{_fmt(v)} €"
 
-    # Month selector — submitting the form with confirm=False re-renders the
-    # breakdown with the newly selected month's data.
+    # Month selector — submitting the form with confirm=False re-renders
+    # the breakdown with the newly selected month's data.
     if sim_all:
         month_options = []
         for rec in sim_all:
@@ -275,8 +281,6 @@ def OPTIONS_STEP_CONFIRM(
                 continue
             _month = _dt.strftime("%m/%Y")
             _total = _fmt(rec.get("value_eur"))
-            # Short label: mes + total. El desglose completo aparece debajo
-            # como campos read-only del propio formulario.
             month_options.append({
                 "value": _dt.strftime("%Y-%m"),
                 "label": f"{_month} — {_total} €",
@@ -291,8 +295,10 @@ def OPTIONS_STEP_CONFIRM(
                 sel.SelectSelector({"options": month_options, "mode": "dropdown"})
             )
 
-    # Read-only breakdown of the currently selected month as form fields.
-    # Uses ConstantSelector so values render inline and cannot be edited.
+    # Read-only breakdown of the currently selected month as labelled fields.
+    # Each ConstantSelector shows "<label>: <value>" — the label travels
+    # inside the selector config to guarantee it renders regardless of HA
+    # translation pickup timing.
     if sim:
         _month_str = (
             sim["datetime"].strftime("%m/%Y")
@@ -301,18 +307,18 @@ def OPTIONS_STEP_CONFIRM(
         )
         _delta_h = str(sim.get("delta_h", 0))
 
-        _fields: list[tuple[str, str]] = [
-            ("info_month", f"{_month_str}  ·  {_delta_h} h"),
-            ("info_energy_term", _eur(sim.get("energy_term"))),
-            ("info_power_term", _eur(sim.get("power_term"))),
-            ("info_others_term", _eur(sim.get("others_term"))),
-            ("info_surplus_term", f"−{_eur(sim.get('surplus_term'))}"),
-            ("info_savings_term", _eur(sim.get("savings_term"))),
-            ("info_value_eur", _eur(sim.get("value_eur"))),
+        _rows: list[tuple[str, str, str]] = [
+            ("info_month", "Mes · horas facturadas", f"{_month_str}  ·  {_delta_h} h"),
+            ("info_energy_term", "Energía importada (con impuestos)", _eur(sim.get("energy_term"))),
+            ("info_power_term", "Potencia contratada (con impuestos)", _eur(sim.get("power_term"))),
+            ("info_others_term", "Otros (contador, bono social, con impuestos)", _eur(sim.get("others_term"))),
+            ("info_surplus_term", "Compensación excedentes (se resta)", f"−{_eur(sim.get('surplus_term'))}"),
+            ("info_savings_term", "Ahorro autoconsumo ☀", _eur(sim.get("savings_term"))),
+            ("info_value_eur", "TOTAL factura estimada", _eur(sim.get("value_eur"))),
         ]
-        for _key, _value in _fields:
+        for _key, _label, _value in _rows:
             schema[vol.Optional(_key, default=_value)] = sel.ConstantSelector(
-                {"value": _value, "label": _value}
+                {"value": _value, "label": f"{_label}: {_value}"}
             )
 
     if apply_from:
