@@ -286,6 +286,17 @@ async def simulate_last_month_billing(
         rec_sc["datetime"]: (rec_sc.get("energy_term") or 0.0)
         for rec_sc in monthly_sc
     }
+    # python-edata's `value_eur` = energy_term + power_term + others_term and
+    # does NOT subtract the surplus compensation. For a Spanish "compensacion
+    # simplificada" customer the final invoice IS discounted by surplus_term,
+    # so we override value_eur here so the UI (simulation + dashboard) shows
+    # the amount the user will actually pay.
+    for rec in monthly:
+        _e = rec.get("energy_term") or 0.0
+        _p = rec.get("power_term") or 0.0
+        _o = rec.get("others_term") or 0.0
+        _s = rec.get("surplus_term") or 0.0
+        rec["value_eur"] = round(_e + _p + _o - _s, 4)
     for rec in monthly:
         actual_energy = rec.get("energy_term") or 0.0
         sc_energy = savings_map.get(rec["datetime"])

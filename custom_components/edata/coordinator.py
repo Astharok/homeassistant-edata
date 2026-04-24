@@ -1289,11 +1289,20 @@ class EdataCoordinator(DataUpdateCoordinator):
                     rec["self_consumption_kWh"] = 0.0
                 if month_key in cost_by_month:
                     c = cost_by_month[month_key]
-                    rec["energy_term"] = round(c.get("energy_term") or 0.0, 4)
-                    rec["power_term"] = round(c.get("power_term") or 0.0, 4)
-                    rec["surplus_term"] = round(c.get("surplus_term") or 0.0, 4)
-                    rec["others_term"] = round(c.get("others_term") or 0.0, 4)
-                    rec["value_eur"] = round(c.get("value_eur") or 0.0, 4)
+                    _e = c.get("energy_term") or 0.0
+                    _p = c.get("power_term") or 0.0
+                    _s = c.get("surplus_term") or 0.0
+                    _o = c.get("others_term") or 0.0
+                    rec["energy_term"] = round(_e, 4)
+                    rec["power_term"] = round(_p, 4)
+                    rec["surplus_term"] = round(_s, 4)
+                    rec["others_term"] = round(_o, 4)
+                    # python-edata returns value_eur = energy + power + others
+                    # (the gross import bill) and leaves surplus_term as a
+                    # separate line. For the final amount the user pays we
+                    # subtract the surplus compensation here so the dashboard
+                    # total matches what will be billed.
+                    rec["value_eur"] = round(_e + _p + _o - _s, 4)
                 rec["savings_term"] = round(savings_agg.get(month_key, 0.0), 4)
             enriched.append(rec)
         return enriched
