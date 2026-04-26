@@ -286,6 +286,11 @@ class EdataCoordinator(DataUpdateCoordinator):
             self.billing_rules is not None,
         )
 
+        # Snapshot current consumptions so we can re-merge records that fall
+        # outside the requested date window. The edata library replaces rather
+        # than merges, so older data would be silently dropped otherwise.
+        _pre_update_snapshot = list(self._edata.data.get("consumptions", []))
+
         # Run the update in a worker and wait for completion before continuing.
         # e-data's async wrapper can return before the underlying update is done.
         # _must_dump=False: we handle the dump ourselves after enrichment.
@@ -379,6 +384,35 @@ class EdataCoordinator(DataUpdateCoordinator):
                     self.hass, f"edata_datadis_failure_{self.id}"
                 )
             self._datadis_failure_count = 0
+
+        # Re-merge records that the edata library dropped because they predate
+        # date_from. Only fires when the update actually succeeded (so we don't
+        # re-inject stale data into a failed/empty response).
+        if update_result and post_counts["consumptions"] > 0 and _pre_update_snapshot:
+            _post_datetimes = {
+                c.get("datetime") for c in self._edata.data.get("consumptions", [])
+            }
+            _orphans = [
+                c for c in _pre_update_snapshot
+                if c.get("datetime") not in _post_datetimes
+            ]
+            if _orphans:
+                _LOGGER.info(
+                    "%s: update: re-merging %d record(s) outside window (%s .. %s)",
+                    self.scups, len(_orphans),
+                    _orphans[0].get("datetime"),
+                    _orphans[-1].get("datetime"),
+                )
+                _merged = sorted(
+                    list(self._edata.data.get("consumptions", [])) + _orphans,
+                    key=lambda c: c.get("datetime") or datetime.min,
+                )
+                self._edata.data["consumptions"] = _merged
+                post_counts["consumptions"] = len(_merged)
+                _LOGGER.info(
+                    "%s: update: after window-orphan merge consumptions=%d",
+                    self.scups, len(_merged),
+                )
 
         if post_counts["consumptions"] > 0:
             # 1. Dump clean data first — edata's EdataSchema (voluptuous) uses
