@@ -10,6 +10,12 @@
       },
       "force_surplus_reimport": {
         "name": "Reimportar datos do periodo actual"
+      },
+      "dump_diagnostics": {
+        "name": "Volver diagnóstico de datos ao rexistro"
+      },
+      "refine_data": {
+        "name": "Refinar datos (mellor por mes)"
       }
     },
     "sensor": {

@@ -10,6 +10,12 @@
       },
       "force_surplus_reimport": {
         "name": "Reimportar datos del periodo actual"
+      },
+      "dump_diagnostics": {
+        "name": "Volcar diagnóstico de datos al log"
+      },
+      "refine_data": {
+        "name": "Refinar datos (mejor por mes)"
       }
     },
     "sensor": {

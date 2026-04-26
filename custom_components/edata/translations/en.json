@@ -10,6 +10,12 @@
       },
       "force_surplus_reimport": {
         "name": "Force period data reimport"
+      },
+      "dump_diagnostics": {
+        "name": "Dump data diagnostics to log"
+      },
+      "refine_data": {
+        "name": "Refine data (best per month)"
       }
     },
     "sensor": {

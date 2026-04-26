@@ -2075,6 +2075,10 @@ class EdataCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
 
+        # Snapshot consumptions from the long (23-month) pass before the short
+        # pass overwrites them with a narrower date window.
+        _long_consumptions_snapshot = list(self._edata.data.get("consumptions", []))
+
         self.set_short_cache()
         _LOGGER.debug(
             "%s: reducing cache items to last %s months", self.scups, self.cache_months
@@ -2084,6 +2088,49 @@ class EdataCoordinator(DataUpdateCoordinator):
             await self._async_update_data(update_statistics=False)
         finally:
             self._edata._must_dump = True
+
+        # Merge back records from the long pass that the short pass dropped.
+        # The short pass wins for overlapping timestamps (more recent API data);
+        # we only add records whose datetime is absent from the short window.
+        _short_datetimes = {
+            c.get("datetime") for c in self._edata.data.get("consumptions", [])
+        }
+        _orphans = [
+            c for c in _long_consumptions_snapshot
+            if c.get("datetime") not in _short_datetimes
+        ]
+        if _orphans:
+            _LOGGER.warning(
+                "%s: async_full_import: merging %d orphan record(s) from long pass "
+                "back into storage (datetime range: %s .. %s)",
+                self.scups,
+                len(_orphans),
+                _orphans[0].get("datetime"),
+                _orphans[-1].get("datetime"),
+            )
+            _merged = sorted(
+                list(self._edata.data.get("consumptions", [])) + _orphans,
+                key=lambda c: c.get("datetime") or datetime.min,
+            )
+            self._edata.data["consumptions"] = _merged
+            _to_dump = self._edata.data.get("consumptions", [])
+            with _clean_consumptions(_to_dump):
+                await self.hass.async_add_executor_job(
+                    edata_dump_storage,
+                    self._edata._cups,
+                    self._edata.data,
+                    self._edata._storage_dir,
+                )
+            _LOGGER.warning(
+                "%s: async_full_import: merged storage now has %d consumptions",
+                self.scups,
+                len(_merged),
+            )
+        else:
+            _LOGGER.warning(
+                "%s: async_full_import: no orphan records — long and short passes overlap completely",
+                self.scups,
+            )
 
     def set_long_cache(self):
         """Set the number of cached monts to a long value (two years)."""
@@ -2179,3 +2226,398 @@ class EdataCoordinator(DataUpdateCoordinator):
             await asyncio.to_thread(self._edata.process_cost)
 
         await self.rebuild_statistics(since, self.cost_stat_ids)
+
+    # ------------------------------------------------------------------
+    # Refine data (best-per-month merge from all local files)
+    # ------------------------------------------------------------------
+
+    async def async_refine_data(self) -> None:
+        """Merge the best per-month data from all local files and rebuild statistics."""
+
+        changed = await self.hass.async_add_executor_job(self._refine_data_sync)
+        if changed:
+            _consumptions = self._edata.data.get("consumptions", [])
+            with _clean_consumptions(_consumptions):
+                await asyncio.to_thread(self._edata.process_data)
+            await self.rebuild_statistics()
+
+    def _refine_data_sync(self) -> bool:
+        """Load all available local files and build the best per-month dataset.
+
+        Compares main storage and all dated backups.  For each calendar month,
+        picks the source that has the most hourly records.  If the resulting
+        merged dataset is larger than (or differs from) the current in-memory
+        data the new dataset is saved to disk, the extras sidecar is applied,
+        and a fresh backup is rotated.
+
+        Returns True when the in-memory consumptions were updated, False otherwise.
+        """
+
+        from collections import defaultdict
+
+        edata_dir = os.path.join(self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME)
+        cups_lower = self._edata._cups.lower()
+        main_path = os.path.join(edata_dir, f"edata_{cups_lower}.json")
+        backups_dir = os.path.join(edata_dir, "backups")
+
+        # ── 1. Collect all source file paths (main first, then backups oldest→newest)
+        source_paths: list[tuple[str, str]] = []
+        if os.path.exists(main_path):
+            source_paths.append(("main", main_path))
+        if os.path.isdir(backups_dir):
+            for bp in sorted(glob.glob(os.path.join(backups_dir, "*.json"))):
+                source_paths.append((os.path.basename(bp), bp))
+
+        if not source_paths:
+            _LOGGER.warning("%s: [REFINE] no source files found — nothing to do", self.scups)
+            return False
+
+        # ── 2. Load all sources; group raw records by (source, month)
+        #       month_records[source_label][month] = {dt_str: raw_record}
+        month_records: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(dict))
+
+        for source_label, path in source_paths:
+            try:
+                with open(path, encoding="utf8") as fh:
+                    data = json.load(fh)
+                for c in data.get("consumptions", []):
+                    dt_str = str(c.get("datetime", ""))
+                    month = dt_str[:7]
+                    if len(month) == 7:
+                        month_records[source_label][month][dt_str] = c
+            except (json.JSONDecodeError, OSError) as err:
+                _LOGGER.warning("%s: [REFINE] could not read %s: %s", self.scups, source_label, err)
+
+        if not month_records:
+            _LOGGER.warning("%s: [REFINE] no consumptions found in any source", self.scups)
+            return False
+
+        # ── 3. For each month, pick the source with the most hourly records
+        all_months = sorted({m for src in month_records.values() for m in src})
+        source_labels = [lbl for lbl, _ in source_paths]
+
+        _LOGGER.warning(
+            "%s: [REFINE] evaluating %d months across %d source(s)",
+            self.scups, len(all_months), len(source_paths),
+        )
+
+        merged_map: dict[str, dict] = {}  # dt_str → raw record
+        for month in all_months:
+            best_label = max(
+                source_labels,
+                key=lambda lbl: len(month_records[lbl].get(month, {})),
+            )
+            best_count = len(month_records[best_label].get(month, {}))
+            # Current in-memory count for this month (for comparison logging)
+            cur_count = sum(
+                1 for c in self._edata.data.get("consumptions", [])
+                if str(c.get("datetime", ""))[:7] == month
+            )
+            flag = "  <<< IMPROVED" if best_count > cur_count else ""
+            _LOGGER.warning(
+                "%s: [REFINE]   %s → best=%s (%dh) current=%dh%s",
+                self.scups, month, best_label, best_count, cur_count, flag,
+            )
+            merged_map.update(month_records[best_label].get(month, {}))
+
+        # ── 4. Parse datetimes and build the sorted merged list
+        def _parse_dt(val: object) -> datetime | None:
+            if isinstance(val, datetime):
+                return val
+            if isinstance(val, str):
+                try:
+                    return datetime.fromisoformat(val)
+                except ValueError:
+                    return None
+            return None
+
+        merged: list[dict] = []
+        for raw in sorted(merged_map.values(), key=lambda c: str(c.get("datetime", ""))):
+            dt = _parse_dt(raw.get("datetime"))
+            if dt is None:
+                continue
+            record = dict(raw)
+            record["datetime"] = dt
+            merged.append(record)
+
+        current_count = len(self._edata.data.get("consumptions", []))
+        if len(merged) == current_count:
+            # Same size — check if content actually differs
+            cur_months = {
+                str(c.get("datetime", ""))[:7]
+                for c in self._edata.data.get("consumptions", [])
+            }
+            new_months = {str(c.get("datetime", ""))[:7] for c in merged}
+            if cur_months == new_months:
+                _LOGGER.warning(
+                    "%s: [REFINE] no improvement found (merged=%d = current=%d, same months)",
+                    self.scups, len(merged), current_count,
+                )
+                return False
+
+        _LOGGER.warning(
+            "%s: [REFINE] applying merge: %d → %d consumptions (delta=%+d)",
+            self.scups, current_count, len(merged), len(merged) - current_count,
+        )
+
+        # ── 5. Apply merged data
+        self._edata.data["consumptions"] = merged
+
+        # Save clean data (without extra keys the edata schema doesn't know)
+        with _clean_consumptions(merged):
+            edata_dump_storage(
+                self._edata._cups,
+                self._edata.data,
+                self._edata._storage_dir,
+            )
+
+        # Re-enrich from cache and sidecar (restores generation/self-consumption fields)
+        self._enrich_consumptions_from_cache()
+        self._apply_extras_sidecar()
+
+        # Rotate backup so we have a dated snapshot of the refined state
+        self._rotate_storage_backup()
+
+        return True
+
+    # ------------------------------------------------------------------
+    # Diagnostics dump
+    # ------------------------------------------------------------------
+
+    async def async_dump_diagnostics(self) -> None:
+        """Log a comprehensive diagnostic report of all stored edata files."""
+
+        await self.hass.async_add_executor_job(self._dump_diagnostics_sync)
+
+    def _dump_diagnostics_sync(self) -> None:
+        """Synchronous diagnostic dump — reads files and logs structured summaries."""
+
+        import calendar
+        from collections import defaultdict
+
+        sep = "=" * 70
+
+        def _analyze_consumptions(consumptions: list) -> dict:
+            """Group hourly records by month and compute per-month stats."""
+            months: dict = defaultdict(lambda: {
+                "count": 0, "total_kwh": 0.0, "total_surplus": 0.0,
+                "surplus_nonzero": 0, "first": None, "last": None,
+            })
+            for c in consumptions:
+                dt = c.get("datetime")
+                if dt is None:
+                    continue
+                key = dt.strftime("%Y-%m") if hasattr(dt, "strftime") else str(dt)[:7]
+                m = months[key]
+                m["count"] += 1
+                m["total_kwh"] += c.get("value_kWh") or 0.0
+                surplus = c.get("surplus_kWh") or 0.0
+                m["total_surplus"] += surplus
+                if surplus > 0:
+                    m["surplus_nonzero"] += 1
+                if m["first"] is None or dt < m["first"]:
+                    m["first"] = dt
+                if m["last"] is None or dt > m["last"]:
+                    m["last"] = dt
+            return dict(sorted(months.items()))
+
+        def _analyze_consumptions_from_json(consumptions: list) -> dict:
+            """Group hourly records by month from raw JSON (datetime as string)."""
+            months: dict = defaultdict(lambda: {
+                "count": 0, "total_kwh": 0.0, "total_surplus": 0.0,
+                "surplus_nonzero": 0, "first": None, "last": None,
+            })
+            for c in consumptions:
+                dt_raw = c.get("datetime")
+                if dt_raw is None:
+                    continue
+                key = str(dt_raw)[:7]  # "YYYY-MM"
+                m = months[key]
+                m["count"] += 1
+                m["total_kwh"] += c.get("value_kWh") or 0.0
+                surplus = c.get("surplus_kWh") or 0.0
+                m["total_surplus"] += surplus
+                if surplus > 0:
+                    m["surplus_nonzero"] += 1
+                if m["first"] is None or dt_raw < m["first"]:
+                    m["first"] = dt_raw
+                if m["last"] is None or dt_raw > m["last"]:
+                    m["last"] = dt_raw
+            return dict(sorted(months.items()))
+
+        def _expected_hours(year_month: str) -> int:
+            """Return expected number of hourly slots in a month (24 * days)."""
+            y, mo = int(year_month[:4]), int(year_month[5:7])
+            return 24 * calendar.monthrange(y, mo)[1]
+
+        def _log_month_table(label: str, months: dict) -> None:
+            _LOGGER.warning("%s: [%s] month breakdown (%d months):", self.scups, label, len(months))
+            keys = list(months.keys())
+            for i, key in enumerate(keys):
+                m = months[key]
+                expected = _expected_hours(key)
+                pct = 100 * m["count"] / expected if expected else 0
+                flag = "  <<< INCOMPLETE" if pct < 80 else ""
+                _LOGGER.warning(
+                    "%s:   %s | hrs=%4d/%4d (%3d%%) | kwh=%8.2f | surp=%4dh/%8.3f%s",
+                    self.scups, key, m["count"], expected, int(pct),
+                    m["total_kwh"], m["surplus_nonzero"], m["total_surplus"], flag,
+                )
+                # Detect gap to next month
+                if i < len(keys) - 1:
+                    y, mo = int(key[:4]), int(key[5:7])
+                    next_y, next_mo = (y, mo + 1) if mo < 12 else (y + 1, 1)
+                    expected_next = f"{next_y:04d}-{next_mo:02d}"
+                    if keys[i + 1] != expected_next:
+                        _LOGGER.warning(
+                            "%s:   >>> GAP: %s is missing (next found: %s)",
+                            self.scups, expected_next, keys[i + 1],
+                        )
+
+        _LOGGER.warning("%s: %s", self.scups, sep)
+        _LOGGER.warning("%s: === EDATA DIAGNOSTICS DUMP ===", self.scups)
+        _LOGGER.warning("%s: %s", self.scups, sep)
+
+        edata_dir = os.path.join(self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME)
+        cups_lower = self._edata._cups.lower()
+
+        # ── 1. IN-MEMORY DATA ──────────────────────────────────────────
+        _LOGGER.warning("%s: [IN-MEMORY] cache_months=%s", self.scups, self.cache_months)
+        _mem_consumptions = self._edata.data.get("consumptions", [])
+        _mem_costs = self._edata.data.get("cost_hourly_sum", [])
+        _mem_maximeter = self._edata.data.get("maximeter", [])
+        _LOGGER.warning(
+            "%s: [IN-MEMORY] consumptions=%d  cost_hourly=%d  maximeter=%d",
+            self.scups, len(_mem_consumptions), len(_mem_costs), len(_mem_maximeter),
+        )
+        if _mem_consumptions:
+            _first = _mem_consumptions[0].get("datetime")
+            _last = _mem_consumptions[-1].get("datetime")
+            _LOGGER.warning(
+                "%s: [IN-MEMORY] consumptions range: %s .. %s",
+                self.scups, _first, _last,
+            )
+            _mem_months = _analyze_consumptions(_mem_consumptions)
+            _log_month_table("IN-MEMORY", _mem_months)
+        else:
+            _LOGGER.warning("%s: [IN-MEMORY] no consumptions in memory", self.scups)
+
+        # ── 2. MAIN STORAGE FILE ON DISK ──────────────────────────────
+        main_path = os.path.join(edata_dir, f"edata_{cups_lower}.json")
+        _LOGGER.warning("%s: [MAIN-STORAGE] path=%s", self.scups, main_path)
+        if os.path.exists(main_path):
+            try:
+                with open(main_path, encoding="utf8") as fh:
+                    main_data = json.load(fh)
+                main_cons = main_data.get("consumptions", [])
+                main_months = _analyze_consumptions_from_json(main_cons)
+                first_dt = main_cons[0].get("datetime", "?") if main_cons else "?"
+                last_dt = main_cons[-1].get("datetime", "?") if main_cons else "?"
+                _LOGGER.warning(
+                    "%s: [MAIN-STORAGE] consumptions=%d  range=%s..%s",
+                    self.scups, len(main_cons), str(first_dt)[:19], str(last_dt)[:19],
+                )
+                _log_month_table("MAIN-STORAGE", main_months)
+            except (json.JSONDecodeError, OSError) as err:
+                _LOGGER.warning("%s: [MAIN-STORAGE] could not read: %s", self.scups, err)
+        else:
+            _LOGGER.warning("%s: [MAIN-STORAGE] file not found", self.scups)
+
+        # ── 3. BACKUP FILES ───────────────────────────────────────────
+        backups_dir = os.path.join(edata_dir, "backups")
+        if os.path.isdir(backups_dir):
+            backup_files = sorted(glob.glob(os.path.join(backups_dir, "*.json")))
+            _LOGGER.warning(
+                "%s: [BACKUPS] %d files in %s",
+                self.scups, len(backup_files), backups_dir,
+            )
+            for bp in backup_files:
+                bname = os.path.basename(bp)
+                try:
+                    with open(bp, encoding="utf8") as fh:
+                        bdata = json.load(fh)
+                    bcons = bdata.get("consumptions", [])
+                    first_dt = bcons[0].get("datetime", "?") if bcons else "?"
+                    last_dt = bcons[-1].get("datetime", "?") if bcons else "?"
+                    _LOGGER.warning(
+                        "%s: [BACKUPS]   %s → consumptions=%d  range=%s..%s",
+                        self.scups, bname, len(bcons),
+                        str(first_dt)[:19], str(last_dt)[:19],
+                    )
+                    bmonths = _analyze_consumptions_from_json(bcons)
+                    _log_month_table(f"BACKUP:{bname}", bmonths)
+                except (json.JSONDecodeError, OSError) as err:
+                    _LOGGER.warning("%s: [BACKUPS]   %s → error: %s", self.scups, bname, err)
+        else:
+            _LOGGER.warning("%s: [BACKUPS] directory not found: %s", self.scups, backups_dir)
+
+        # ── 4. DATADIS CACHE FILES ────────────────────────────────────
+        cache_dir = os.path.join(edata_dir, "cache")
+        if os.path.isdir(cache_dir):
+            cache_files = sorted(glob.glob(os.path.join(cache_dir, "*")))
+            _LOGGER.warning(
+                "%s: [CACHE] %d files in %s",
+                self.scups, len(cache_files), cache_dir,
+            )
+            for cf in cache_files:
+                cname = os.path.basename(cf)
+                try:
+                    with open(cf, encoding="utf8") as fh:
+                        cdata = json.load(fh)
+                    if not isinstance(cdata, list) or not cdata:
+                        _LOGGER.warning("%s: [CACHE]   %s → empty or non-list", self.scups, cname)
+                        continue
+                    item_type = "consumptions" if "consumptionKWh" in cdata[0] else "other"
+                    has_surplus = any(
+                        (item.get("surplusEnergyKWh") or 0) > 0 for item in cdata
+                    )
+                    has_generation = any(
+                        (item.get("generationEnergyKWh") or 0) > 0 for item in cdata
+                    )
+                    dates = [item.get("date", "") for item in cdata if item.get("date")]
+                    first_date = min(dates) if dates else "?"
+                    last_date = max(dates) if dates else "?"
+                    _LOGGER.warning(
+                        "%s: [CACHE]   %s → type=%s items=%d range=%s..%s surp=%s gen=%s",
+                        self.scups, cname, item_type, len(cdata),
+                        first_date, last_date,
+                        "Y" if has_surplus else "N",
+                        "Y" if has_generation else "N",
+                    )
+                except (json.JSONDecodeError, OSError) as err:
+                    _LOGGER.warning("%s: [CACHE]   %s → error: %s", self.scups, cname, err)
+        else:
+            _LOGGER.warning("%s: [CACHE] directory not found: %s", self.scups, cache_dir)
+
+        # ── 5. EXTRAS SIDECAR ─────────────────────────────────────────
+        sidecar_path = self._get_extras_sidecar_path()
+        _LOGGER.warning("%s: [SIDECAR] path=%s", self.scups, sidecar_path)
+        if os.path.exists(sidecar_path):
+            extras = self._read_sidecar_sync()
+            if extras:
+                sidecar_months: dict = defaultdict(lambda: {"count": 0, "gen_nonzero": 0, "sc_nonzero": 0})
+                for iso_key, fields in extras.items():
+                    mk = str(iso_key)[:7]
+                    sidecar_months[mk]["count"] += 1
+                    if (fields.get("generation_kWh") or 0) > 0:
+                        sidecar_months[mk]["gen_nonzero"] += 1
+                    if (fields.get("self_consumption_kWh") or 0) > 0:
+                        sidecar_months[mk]["sc_nonzero"] += 1
+                sidecar_months = dict(sorted(sidecar_months.items()))
+                _LOGGER.warning(
+                    "%s: [SIDECAR] %d entries across %d months",
+                    self.scups, len(extras), len(sidecar_months),
+                )
+                for mk, sm in sidecar_months.items():
+                    _LOGGER.warning(
+                        "%s: [SIDECAR]   %s | entries=%4d | gen>0=%4d | sc>0=%4d",
+                        self.scups, mk, sm["count"], sm["gen_nonzero"], sm["sc_nonzero"],
+                    )
+            else:
+                _LOGGER.warning("%s: [SIDECAR] file exists but is empty", self.scups)
+        else:
+            _LOGGER.warning("%s: [SIDECAR] file not found (no solar extras saved yet)", self.scups)
+
+        _LOGGER.warning("%s: %s", self.scups, sep)
+        _LOGGER.warning("%s: === DIAGNOSTICS DUMP END ===", self.scups)
+        _LOGGER.warning("%s: %s", self.scups, sep)

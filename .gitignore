@@ -73,6 +73,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Sensitive data samples used for local debugging (never commit)
+docs/data/
+
 # PyBuilder
 target/
 
