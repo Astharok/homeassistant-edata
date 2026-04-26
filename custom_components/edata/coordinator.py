@@ -2244,11 +2244,14 @@ class EdataCoordinator(DataUpdateCoordinator):
     def _refine_data_sync(self) -> bool:
         """Load all available local files and build the best per-month dataset.
 
-        Compares main storage and all dated backups.  For each calendar month,
-        picks the source that has the most hourly records.  If the resulting
-        merged dataset is larger than (or differs from) the current in-memory
-        data the new dataset is saved to disk, the extras sidecar is applied,
-        and a fresh backup is rotated.
+        Compares main storage, all dated backups and Datadis cache files.  For
+        each calendar month, picks the source that has the most hourly records.
+        Cache files are included as a last-resort source: they win only when they
+        have strictly more records than any storage/backup source (they lose ties).
+
+        Cache records (consumptionKWh / date / time format) are converted on-the-
+        fly to the storage format (value_kWh / datetime).  Generation and
+        self-consumption extras are restored from the sidecar after saving.
 
         Returns True when the in-memory consumptions were updated, False otherwise.
         """
@@ -2259,24 +2262,21 @@ class EdataCoordinator(DataUpdateCoordinator):
         cups_lower = self._edata._cups.lower()
         main_path = os.path.join(edata_dir, f"edata_{cups_lower}.json")
         backups_dir = os.path.join(edata_dir, "backups")
+        cache_dir = os.path.join(edata_dir, "cache")
 
-        # ── 1. Collect all source file paths (main first, then backups oldest→newest)
-        source_paths: list[tuple[str, str]] = []
-        if os.path.exists(main_path):
-            source_paths.append(("main", main_path))
-        if os.path.isdir(backups_dir):
-            for bp in sorted(glob.glob(os.path.join(backups_dir, "*.json"))):
-                source_paths.append((os.path.basename(bp), bp))
-
-        if not source_paths:
-            _LOGGER.warning("%s: [REFINE] no source files found — nothing to do", self.scups)
-            return False
-
-        # ── 2. Load all sources; group raw records by (source, month)
-        #       month_records[source_label][month] = {dt_str: raw_record}
+        # month_records[source_label][month_key] = {dt_str: raw_record}
         month_records: dict[str, dict[str, dict]] = defaultdict(lambda: defaultdict(dict))
 
-        for source_label, path in source_paths:
+        # ── 1. Main storage + dated backups (highest priority)
+        storage_source_labels: list[str] = []
+        if os.path.exists(main_path):
+            storage_source_labels.append("main")
+        if os.path.isdir(backups_dir):
+            for bp in sorted(glob.glob(os.path.join(backups_dir, "*.json"))):
+                storage_source_labels.append(os.path.basename(bp))
+
+        for label in storage_source_labels:
+            path = main_path if label == "main" else os.path.join(backups_dir, label)
             try:
                 with open(path, encoding="utf8") as fh:
                     data = json.load(fh)
@@ -2284,36 +2284,79 @@ class EdataCoordinator(DataUpdateCoordinator):
                     dt_str = str(c.get("datetime", ""))
                     month = dt_str[:7]
                     if len(month) == 7:
-                        month_records[source_label][month][dt_str] = c
+                        month_records[label][month][dt_str] = c
             except (json.JSONDecodeError, OSError) as err:
-                _LOGGER.warning("%s: [REFINE] could not read %s: %s", self.scups, source_label, err)
+                _LOGGER.warning("%s: [REFINE] could not read %s: %s", self.scups, label, err)
 
-        if not month_records:
-            _LOGGER.warning("%s: [REFINE] no consumptions found in any source", self.scups)
+        if not storage_source_labels:
+            _LOGGER.warning("%s: [REFINE] no storage files found — nothing to do", self.scups)
             return False
+
+        # ── 2. Datadis cache files (fallback — lose in ties with storage/backup)
+        cache_source_labels: list[str] = []
+        if os.path.isdir(cache_dir):
+            for cf in sorted(glob.glob(os.path.join(cache_dir, "*"))):
+                cache_label = f"cache:{os.path.basename(cf)}"
+                try:
+                    with open(cf, encoding="utf8") as fh:
+                        cdata = json.load(fh)
+                    if not isinstance(cdata, list) or not cdata:
+                        continue
+                    # Only hourly consumption records have consumptionKWh
+                    if "consumptionKWh" not in cdata[0]:
+                        continue
+                    for item in cdata:
+                        date_raw = item.get("date", "")  # "2025/01/09"
+                        time_raw = item.get("time", "00:00")  # "00:00"
+                        if not date_raw:
+                            continue
+                        try:
+                            y, mo, d = date_raw.split("/")
+                            hh, mm = time_raw.split(":")
+                            dt_key = f"{y}-{mo}-{d}T{hh}:{mm}:00"
+                            month = f"{y}-{mo}"
+                        except ValueError:
+                            continue
+                        month_records[cache_label][month][dt_key] = {
+                            "datetime": dt_key,
+                            "value_kWh": item.get("consumptionKWh") or 0.0,
+                            "surplus_kWh": item.get("surplusEnergyKWh") or 0.0,
+                        }
+                    if any(month_records[cache_label].values()):
+                        cache_source_labels.append(cache_label)
+                except (json.JSONDecodeError, OSError) as err:
+                    _LOGGER.warning(
+                        "%s: [REFINE] could not read cache %s: %s",
+                        self.scups, os.path.basename(cf), err,
+                    )
+
+        # Storage/backup sources come first so they win ties; cache sources last
+        all_source_labels = storage_source_labels + cache_source_labels
 
         # ── 3. For each month, pick the source with the most hourly records
         all_months = sorted({m for src in month_records.values() for m in src})
-        source_labels = [lbl for lbl, _ in source_paths]
 
         _LOGGER.warning(
-            "%s: [REFINE] evaluating %d months across %d source(s)",
-            self.scups, len(all_months), len(source_paths),
+            "%s: [REFINE] evaluating %d months across %d source(s) (%d storage, %d cache)",
+            self.scups, len(all_months),
+            len(all_source_labels), len(storage_source_labels), len(cache_source_labels),
         )
 
         merged_map: dict[str, dict] = {}  # dt_str → raw record
         for month in all_months:
             best_label = max(
-                source_labels,
+                all_source_labels,
                 key=lambda lbl: len(month_records[lbl].get(month, {})),
             )
             best_count = len(month_records[best_label].get(month, {}))
-            # Current in-memory count for this month (for comparison logging)
             cur_count = sum(
                 1 for c in self._edata.data.get("consumptions", [])
                 if str(c.get("datetime", ""))[:7] == month
             )
-            flag = "  <<< IMPROVED" if best_count > cur_count else ""
+            is_cache_win = best_label.startswith("cache:")
+            flag = ""
+            if best_count > cur_count:
+                flag = f"  <<< IMPROVED{' (from cache)' if is_cache_win else ''}"
             _LOGGER.warning(
                 "%s: [REFINE]   %s → best=%s (%dh) current=%dh%s",
                 self.scups, month, best_label, best_count, cur_count, flag,
@@ -2342,7 +2385,6 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         current_count = len(self._edata.data.get("consumptions", []))
         if len(merged) == current_count:
-            # Same size — check if content actually differs
             cur_months = {
                 str(c.get("datetime", ""))[:7]
                 for c in self._edata.data.get("consumptions", [])
@@ -2363,7 +2405,6 @@ class EdataCoordinator(DataUpdateCoordinator):
         # ── 5. Apply merged data
         self._edata.data["consumptions"] = merged
 
-        # Save clean data (without extra keys the edata schema doesn't know)
         with _clean_consumptions(merged):
             edata_dump_storage(
                 self._edata._cups,
