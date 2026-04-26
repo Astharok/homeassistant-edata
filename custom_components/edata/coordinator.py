@@ -418,9 +418,11 @@ class EdataCoordinator(DataUpdateCoordinator):
             self._datadis_failure_count = 0
 
         # Re-merge records that the edata library dropped because they predate
-        # date_from. Only fires when the update actually succeeded (so we don't
-        # re-inject stale data into a failed/empty response).
-        if update_result and post_counts["consumptions"] > 0 and _pre_update_snapshot:
+        # date_from. Fires whenever the update completed without exception and
+        # returned consumptions — update_result is None (not False) when the
+        # API had no new data but the local cache was still applied, so we must
+        # not gate on its truthiness.
+        if update_exc is None and post_counts["consumptions"] > 0 and _pre_update_snapshot:
             _post_datetimes = {
                 c.get("datetime") for c in self._edata.data.get("consumptions", [])
             }
