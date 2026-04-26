@@ -289,7 +289,39 @@ class EdataCoordinator(DataUpdateCoordinator):
         # Snapshot current consumptions so we can re-merge records that fall
         # outside the requested date window. The edata library replaces rather
         # than merges, so older data would be silently dropped otherwise.
+        # On first boot the library starts with an empty in-memory state, so we
+        # also read the coordinator's own storage JSON (which may contain a more
+        # complete dataset saved by a previous session or by refine_data).
         _pre_update_snapshot = list(self._edata.data.get("consumptions", []))
+        if not _pre_update_snapshot:
+            try:
+                _snap_dir = os.path.join(
+                    self.hass.config.path(STORAGE_DIR), EDATA_PROG_NAME
+                )
+                _snap_path = os.path.join(
+                    _snap_dir, f"edata_{self._edata._cups.lower()}.json"
+                )
+                with open(_snap_path, encoding="utf8") as _snap_fh:
+                    _snap_data = json.load(_snap_fh)
+                for _rec in _snap_data.get("consumptions", []):
+                    _dt_val = _rec.get("datetime")
+                    if _dt_val is None:
+                        continue
+                    if isinstance(_dt_val, str):
+                        try:
+                            _dt_val = datetime.fromisoformat(_dt_val)
+                        except ValueError:
+                            continue
+                        _rec = dict(_rec)
+                        _rec["datetime"] = _dt_val
+                    _pre_update_snapshot.append(_rec)
+                if _pre_update_snapshot:
+                    _LOGGER.info(
+                        "%s: update: loaded %d record(s) from storage for orphan-merge snapshot",
+                        self.scups, len(_pre_update_snapshot),
+                    )
+            except (OSError, json.JSONDecodeError):
+                pass  # No storage file yet — first ever run
 
         # Run the update in a worker and wait for completion before continuing.
         # e-data's async wrapper can return before the underlying update is done.
