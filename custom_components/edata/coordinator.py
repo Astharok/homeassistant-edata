@@ -2123,31 +2123,34 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         _LOGGER.warning("Importing last two years of data from Datadis")
         self.set_long_cache()
-        # Prevent update() from dumping empty state if Datadis returns nothing.
-        # _async_update_data will trigger _rotate_storage_backup only when
-        # consumptions > 0, so the rolling backup is always consistent.
-        self._edata._must_dump = False
         try:
-            await self._async_update_data(update_statistics=False)
+            # Prevent update() from dumping empty state if Datadis returns nothing.
+            # _async_update_data will trigger _rotate_storage_backup only when
+            # consumptions > 0, so the rolling backup is always consistent.
+            self._edata._must_dump = False
+            try:
+                await self._async_update_data(update_statistics=False)
+            finally:
+                self._edata._must_dump = True
+
+            _consumptions = self._edata.data.get("consumptions", [])
+            if len(_consumptions) > 0:
+                with _clean_consumptions(_consumptions):
+                    await asyncio.to_thread(self._edata.process_data)
+
+            # Repair statistics only if they have become corrupt (normal, non-forced path)
+            if not await self.check_statistics_integrity():
+                await self.rebuild_statistics()
+            else:
+                _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
+
+            # Snapshot consumptions from the long (23-month) pass before the short
+            # pass overwrites them with a narrower date window.
+            _long_consumptions_snapshot = list(self._edata.data.get("consumptions", []))
         finally:
-            self._edata._must_dump = True
-
-        _consumptions = self._edata.data.get("consumptions", [])
-        if len(_consumptions) > 0:
-            with _clean_consumptions(_consumptions):
-                await asyncio.to_thread(self._edata.process_data)
-
-        # Repair statistics only if they have become corrupt (normal, non-forced path) (normal, non-forced path)
-        if not await self.check_statistics_integrity():
-            await self.rebuild_statistics()
-        else:
-            _LOGGER.warning("%s: statistics recreation is not needed", self.scups)
-
-        # Snapshot consumptions from the long (23-month) pass before the short
-        # pass overwrites them with a narrower date window.
-        _long_consumptions_snapshot = list(self._edata.data.get("consumptions", []))
-
-        self.set_short_cache()
+            # Guarantee cache_months is always restored to short, even if the long
+            # pass raised an exception, so periodic updates are not affected.
+            self.set_short_cache()
         _LOGGER.debug(
             "%s: reducing cache items to last %s months", self.scups, self.cache_months
         )
@@ -2389,6 +2392,9 @@ class EdataCoordinator(DataUpdateCoordinator):
                             "datetime": dt_key,
                             "value_kWh": item.get("consumptionKWh") or 0.0,
                             "surplus_kWh": item.get("surplusEnergyKWh") or 0.0,
+                            # Required by ConsumptionSchema (voluptuous)
+                            "delta_h": 1.0,
+                            "real": True,
                         }
                     if any(month_records[cache_label].values()):
                         cache_source_labels.append(cache_label)
