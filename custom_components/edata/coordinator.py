@@ -356,6 +356,10 @@ class EdataCoordinator(DataUpdateCoordinator):
         _stale_surplus_months: list[tuple[int, int]] = []
         # Per-month backup: {(year, month): {key: [rows]}} taken before purging.
         _month_backups: dict[tuple[int, int], dict[str, list]] = {}
+        # Months where Datadis returned surplus data this cycle (ACCEPT decision).
+        # When non-empty, a rebuild_statistics is triggered from the earliest
+        # accepted month so the recorder reflects the corrected surplus values.
+        _accepted_months: list[tuple[int, int]] = []
         if _pre_update_snapshot:
             _stale_surplus_months = self._find_stale_zero_surplus_months(date_from)
             if _stale_surplus_months:
@@ -559,6 +563,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                 if _new_surplus > 0:
                     # ACCEPT — Datadis now has surplus data for this month
                     self._surplus_refresh_done.add(_mk)
+                    _accepted_months.append(_mk)
                     _surplus_recs = sum(1 for _c in _new_recs if (_c.get("surplus_kWh") or 0) > 0)
                     _LOGGER.info(
                         "%s: surplus auto-refresh: ACCEPT %04d-%02d"
@@ -639,7 +644,34 @@ class EdataCoordinator(DataUpdateCoordinator):
             )
 
         if update_statistics:
-            await self.update_statistics()
+            if _accepted_months:
+                # One or more months received surplus data this cycle.
+                # Rebuild statistics from the start of the earliest accepted month
+                # so the recorder gets the corrected surplus values without a
+                # manual button press.
+                _rebuild_from = datetime(
+                    min(_accepted_months)[0], min(_accepted_months)[1], 1
+                )
+                _LOGGER.info(
+                    "%s: surplus auto-refresh: rebuilding statistics from %04d-%02d"
+                    " (%d accepted month(s))",
+                    self.scups,
+                    _rebuild_from.year, _rebuild_from.month,
+                    len(_accepted_months),
+                )
+                _rebuild_stat_ids = (
+                    set(self.energy_stat_ids)
+                    .union(self.solar_stat_ids)
+                )
+                if self.billing_rules:
+                    _rebuild_stat_ids.update(self.cost_stat_ids)
+                self._clear_stats_tracking(_rebuild_stat_ids)
+                await self.rebuild_statistics(
+                    from_dt=dt_util.as_utc(_rebuild_from),
+                    include_only=sorted(_rebuild_stat_ids),
+                )
+            else:
+                await self.update_statistics()
 
         await self._load_data()
 

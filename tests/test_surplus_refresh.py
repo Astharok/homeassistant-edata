@@ -416,3 +416,87 @@ class TestOrphanMergeDoesNotContaminateDecision:
             "even though orphan-merge would have re-added them"
         )
         assert len(recs) == 30  # backup fully restored
+
+
+# ---------------------------------------------------------------------------
+# _accepted_months tracks ACCEPT decisions for stats rebuild
+# ---------------------------------------------------------------------------
+
+def _run_decision_with_tracking(
+    backup_recs: list[dict],
+    datadis_recs: list[dict],
+    update_exc: Exception | None,
+    attempts: int,
+    max_attempts: int = 5,
+) -> tuple[str, list[tuple[int, int]]]:
+    """Like _run_decision but also returns the accepted_months list."""
+    mk = (2026, 5)
+    backup = {"consumptions": list(backup_recs)}
+    new_recs = datadis_recs
+    new_surplus = sum((c.get("surplus_kWh") or 0) for c in new_recs)
+    new_count = len(new_recs)
+    old_count = len(backup.get("consumptions", []))
+    accepted_months: list[tuple[int, int]] = []
+
+    if new_surplus > 0:
+        decision = "ACCEPT"
+        accepted_months.append(mk)
+    elif update_exc is not None or new_count < old_count:
+        decision = "RESTORE"
+    else:
+        decision = "GIVE_UP" if attempts >= max_attempts else "KEEP_NEW"
+
+    return decision, accepted_months
+
+
+class TestAcceptedMonthsTracking:
+    """Verify that _accepted_months is populated on ACCEPT and empty otherwise."""
+
+    def _may_recs(self, n: int, surplus: float = 0.0) -> list[dict]:
+        return [_rec(_dt(2026, 5, d + 1), surplus=surplus) for d in range(n)]
+
+    def test_accepted_months_populated_on_accept(self):
+        """ACCEPT appends the month to _accepted_months."""
+        old = self._may_recs(30)
+        new = self._may_recs(30, surplus=1.5)
+        decision, accepted = _run_decision_with_tracking(old, new, None, attempts=1)
+        assert decision == "ACCEPT"
+        assert (2026, 5) in accepted
+
+    def test_accepted_months_empty_on_keep_new(self):
+        """KEEP_NEW does not add to _accepted_months."""
+        old = self._may_recs(30)
+        new = self._may_recs(30, surplus=0.0)
+        decision, accepted = _run_decision_with_tracking(old, new, None, attempts=1)
+        assert decision == "KEEP_NEW"
+        assert accepted == []
+
+    def test_accepted_months_empty_on_restore(self):
+        """RESTORE does not add to _accepted_months."""
+        old = self._may_recs(30)
+        new = []
+        decision, accepted = _run_decision_with_tracking(old, new, None, attempts=1)
+        assert decision == "RESTORE"
+        assert accepted == []
+
+    def test_accepted_months_empty_on_give_up(self):
+        """GIVE_UP does not add to _accepted_months."""
+        old = self._may_recs(30)
+        new = self._may_recs(30, surplus=0.0)
+        decision, accepted = _run_decision_with_tracking(old, new, None, attempts=5, max_attempts=5)
+        assert decision == "GIVE_UP"
+        assert accepted == []
+
+    def test_multiple_accepted_months(self):
+        """When multiple months are accepted, all appear in _accepted_months."""
+        accepted_months: list[tuple[int, int]] = []
+        for month in [4, 5]:
+            mk = (2026, month)
+            new_recs = [_rec(_dt(2026, month, d + 1), surplus=1.0) for d in range(28)]
+            if sum((c.get("surplus_kWh") or 0) for c in new_recs) > 0:
+                accepted_months.append(mk)
+        assert (2026, 4) in accepted_months
+        assert (2026, 5) in accepted_months
+        # rebuild_from would be the earliest: April
+        rebuild_from = datetime(min(accepted_months)[0], min(accepted_months)[1], 1)
+        assert rebuild_from == datetime(2026, 4, 1)
