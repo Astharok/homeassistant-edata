@@ -1963,25 +1963,36 @@ class EdataCoordinator(DataUpdateCoordinator):
             self._last_stats_sum.pop(stat_id, None)
 
     async def _async_force_reimport_period(
-        self, date_from: datetime, scope: str = "period"
+        self, date_from: datetime, scope: str = "period", force_datadis_fetch: bool = False
     ) -> None:
-        """Force reimport all metrics for the selected period and overwrite stats."""
+        """Force reimport all metrics for the selected period and overwrite stats.
+
+        Args:
+            date_from: Start of the period to reimport.
+            scope: Label used in log messages and notifications.
+            force_datadis_fetch: When True, skip the rolling backup and clear the
+                Datadis disk cache so fresh data is always fetched from the API.
+                Use this when Datadis has new/corrected data (e.g. surplus values
+                added after the initial consumption upload).
+        """
 
         _LOGGER.warning(
-            "%s: force reimport start scope=%s date_from=%s",
+            "%s: force reimport start scope=%s date_from=%s force_datadis_fetch=%s",
             self.scups,
             scope,
             date_from.isoformat(),
+            force_datadis_fetch,
         )
         await self._notify_force_reimport_warning(scope, date_from)
 
         def _prepare() -> bool:
-            # Try to load the most recent rolling backup (backups/ dir).
-            # This avoids any Datadis call and is safe even after 429 lockouts.
-            if self._load_latest_storage_backup(date_from):
-                return True
-            # No usable backup: purge in-memory period data and reset rate limits
-            # so update() will re-fetch from Datadis (or disk-cache if still valid).
+            if not force_datadis_fetch:
+                # Try to load the most recent rolling backup (backups/ dir).
+                # This avoids any Datadis call and is safe even after 429 lockouts.
+                if self._load_latest_storage_backup(date_from):
+                    return True
+            # No usable backup (or force_datadis_fetch=True): purge in-memory period
+            # data and reset rate limits so update() re-fetches from Datadis.
             self._purge_cached_period_data(date_from)
             self._force_reset_fetch_rate_limits()
             return False
@@ -1994,6 +2005,16 @@ class EdataCoordinator(DataUpdateCoordinator):
         )
 
         if not used_local_snapshot:
+            # When force_datadis_fetch is set, clear the Datadis connector disk
+            # cache before fetching so we bypass the 24h response cache and
+            # always get the latest data from the API (e.g. corrected surplus).
+            if force_datadis_fetch:
+                await self.hass.async_add_executor_job(self._force_clear_datadis_cache)
+                _LOGGER.warning(
+                    "%s: force reimport datadis disk-cache cleared",
+                    self.scups,
+                )
+
             # Log disk-cache state so we know if connector will use cached data
             # or hit Datadis live. Empty files (size=0) are 429 markers.
             _cache_dir = self._edata.datadis_api._recent_cache_dir
@@ -2090,7 +2111,11 @@ class EdataCoordinator(DataUpdateCoordinator):
         _LOGGER.warning("%s: force reimport finished", self.scups)
 
     async def async_force_surplus_reimport(self):
-        """Force reimport all values for current cache window and overwrite stats."""
+        """Force reimport all values for current cache window and overwrite stats.
+
+        Bypasses the rolling backup and clears the Datadis disk cache to ensure
+        fresh data (including corrected surplus values) is fetched from Datadis.
+        """
 
         reimport_from = self._get_cached_period_start()
         _LOGGER.warning(
@@ -2098,7 +2123,7 @@ class EdataCoordinator(DataUpdateCoordinator):
             self.scups,
             reimport_from.isoformat(),
         )
-        await self._async_force_reimport_period(reimport_from)
+        await self._async_force_reimport_period(reimport_from, force_datadis_fetch=True)
 
     async def async_full_import(self):
         """Apply an async full fetch."""
