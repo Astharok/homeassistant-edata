@@ -347,7 +347,15 @@ class EdataCoordinator(DataUpdateCoordinator):
         #   4. Let update() run normally — fresh Datadis data is processed.
         # Safety net: _pre_update_snapshot still contains the old records, so
         # the orphan-merge below restores them if Datadis is unavailable.
+        # Keys that hold time-series data that must be backed up and potentially restored.
+        _SURPLUS_REFRESH_KEYS = [
+            "consumptions", "cost_hourly_sum",
+            "consumptions_daily_sum", "cost_daily_sum",
+            "consumptions_monthly_sum", "cost_monthly_sum",
+        ]
         _stale_surplus_months: list[tuple[int, int]] = []
+        # Per-month backup: {(year, month): {key: [rows]}} taken before purging.
+        _month_backups: dict[tuple[int, int], dict[str, list]] = {}
         if _pre_update_snapshot:
             _stale_surplus_months = self._find_stale_zero_surplus_months(date_from)
             if _stale_surplus_months:
@@ -358,6 +366,23 @@ class EdataCoordinator(DataUpdateCoordinator):
                     [f"{y:04d}-{m:02d}" for y, m in _stale_surplus_months],
                 )
                 for _yr, _mo in _stale_surplus_months:
+                    # --- Backup before purge ---
+                    _month_backups[(_yr, _mo)] = {
+                        _k: [
+                            dict(_r)
+                            for _r in self._edata.data.get(_k, [])
+                            if _r.get("datetime") is not None
+                            and _r["datetime"].year == _yr
+                            and _r["datetime"].month == _mo
+                        ]
+                        for _k in _SURPLUS_REFRESH_KEYS
+                    }
+                    _bk_count = len(_month_backups[(_yr, _mo)].get("consumptions", []))
+                    _LOGGER.info(
+                        "%s: surplus auto-refresh: backup %04d-%02d consumptions=%d",
+                        self.scups, _yr, _mo, _bk_count,
+                    )
+                    # --- Purge from memory ---
                     self._purge_month_from_memory(_yr, _mo)
                     self._surplus_refresh_attempts[(_yr, _mo)] = (
                         self._surplus_refresh_attempts.get((_yr, _mo), 0) + 1
@@ -492,39 +517,82 @@ class EdataCoordinator(DataUpdateCoordinator):
                     self.scups, len(_merged),
                 )
 
-        # Post-refresh tracking: check which surplus-auto-refresh months now have data.
-        if _stale_surplus_months:
-            _post_months_surplus: dict[tuple[int, int], int] = {}
-            for c in self._edata.data.get("consumptions", []):
-                dt = c.get("datetime")
-                if dt is None:
-                    continue
-                key = (dt.year, dt.month)
-                if key in set(_stale_surplus_months) and (c.get("surplus_kWh") or 0) > 0:
-                    _post_months_surplus[key] = _post_months_surplus.get(key, 0) + 1
-            _resolved = [k for k in _stale_surplus_months if k in _post_months_surplus]
-            _still_missing = [k for k in _stale_surplus_months if k not in _post_months_surplus]
-            for k in _resolved:
-                self._surplus_refresh_done.add(k)
-                _LOGGER.info(
-                    "%s: surplus auto-refresh: resolved %04d-%02d (%d surplus records)",
-                    self.scups, k[0], k[1], _post_months_surplus[k],
-                )
-            for k in _still_missing:
-                attempts = self._surplus_refresh_attempts.get(k, 0)
-                if attempts >= self._MAX_SURPLUS_REFRESH_ATTEMPTS:
-                    self._surplus_refresh_done.add(k)
+        # Post-refresh decision: for each purged month decide whether to ACCEPT
+        # the new Datadis data, KEEP it as-is (still 0 surplus but complete), or
+        # RESTORE the backup (data regressed or Datadis unavailable).
+        #
+        #   new_surplus > 0              → ACCEPT  (surplus arrived, mark resolved)
+        #   new_count >= old_count       → KEEP NEW (data complete, surplus not yet
+        #     AND new_surplus == 0         available — retry next cycle)
+        #   new_count < old_count        → RESTORE  (Datadis returned less data than
+        #     OR new_count == 0            we had; revert to avoid data loss)
+        #   update_exc is not None       → RESTORE  (API failure, always revert)
+        if _month_backups:
+            for _mk in list(_stale_surplus_months):
+                _myr, _mmo = _mk
+                _backup = _month_backups.get(_mk, {})
+                _old_count = len(_backup.get("consumptions", []))
+
+                _new_recs = [
+                    _c for _c in self._edata.data.get("consumptions", [])
+                    if _c.get("datetime") is not None
+                    and _c["datetime"].year == _myr
+                    and _c["datetime"].month == _mmo
+                ]
+                _new_surplus = sum((_c.get("surplus_kWh") or 0) for _c in _new_recs)
+                _new_count = len(_new_recs)
+
+                _attempts = self._surplus_refresh_attempts.get(_mk, 0)
+
+                if _new_surplus > 0:
+                    # ACCEPT — Datadis now has surplus data for this month
+                    self._surplus_refresh_done.add(_mk)
+                    _surplus_recs = sum(1 for _c in _new_recs if (_c.get("surplus_kWh") or 0) > 0)
                     _LOGGER.info(
-                        "%s: surplus auto-refresh: giving up on %04d-%02d after %d attempts"
-                        " — Datadis has no surplus data for this month",
-                        self.scups, k[0], k[1], attempts,
+                        "%s: surplus auto-refresh: ACCEPT %04d-%02d"
+                        " surplus_records=%d new_count=%d old_count=%d",
+                        self.scups, _myr, _mmo, _surplus_recs, _new_count, _old_count,
                     )
+                elif update_exc is not None or (_new_count == 0 and _old_count > 0) or _new_count < _old_count:
+                    # RESTORE — Datadis failed, returned nothing, or fewer records
+                    _LOGGER.warning(
+                        "%s: surplus auto-refresh: RESTORE %04d-%02d"
+                        " (update_exc=%s new_count=%d old_count=%d) — reverting to backup",
+                        self.scups, _myr, _mmo,
+                        type(update_exc).__name__ if update_exc else None,
+                        _new_count, _old_count,
+                    )
+                    for _bk, _brows in _backup.items():
+                        _current_other = [
+                            _r for _r in self._edata.data.get(_bk, [])
+                            if not (
+                                _r.get("datetime") is not None
+                                and _r["datetime"].year == _myr
+                                and _r["datetime"].month == _mmo
+                            )
+                        ]
+                        self._edata.data[_bk] = sorted(
+                            _current_other + _brows,
+                            key=lambda _r: _r.get("datetime") or datetime.min,
+                        )
+                    # Don't count this as a resolved attempt
+                    self._surplus_refresh_attempts[_mk] = max(0, _attempts - 1)
                 else:
-                    _LOGGER.info(
-                        "%s: surplus auto-refresh: %04d-%02d still zero surplus"
-                        " (attempt %d/%d, will retry next cycle)",
-                        self.scups, k[0], k[1], attempts, self._MAX_SURPLUS_REFRESH_ATTEMPTS,
-                    )
+                    # KEEP NEW — data complete but 0 surplus; Datadis doesn't have
+                    # it yet; accept fresh data and retry next cycle
+                    if _attempts >= self._MAX_SURPLUS_REFRESH_ATTEMPTS:
+                        self._surplus_refresh_done.add(_mk)
+                        _LOGGER.info(
+                            "%s: surplus auto-refresh: GIVE UP %04d-%02d"
+                            " after %d attempts — Datadis has no surplus for this month",
+                            self.scups, _myr, _mmo, _attempts,
+                        )
+                    else:
+                        _LOGGER.info(
+                            "%s: surplus auto-refresh: KEEP NEW %04d-%02d"
+                            " still 0 surplus (attempt %d/%d, will retry)",
+                            self.scups, _myr, _mmo, _attempts, self._MAX_SURPLUS_REFRESH_ATTEMPTS,
+                        )
 
         if post_counts["consumptions"] > 0:
             # 1. Dump clean data first — edata's EdataSchema (voluptuous) uses
