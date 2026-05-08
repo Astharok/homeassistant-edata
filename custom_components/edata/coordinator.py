@@ -210,6 +210,12 @@ class EdataCoordinator(DataUpdateCoordinator):
         self._sidecar_corruption_path: str | None = None
         self._datadis_failure_count = 0
 
+        # Automatic surplus refresh tracking.
+        # Months (year, month) that already have surplus or have exhausted retries.
+        self._surplus_refresh_done: set[tuple[int, int]] = set()
+        # Retry counter per month — give up after MAX_SURPLUS_REFRESH_ATTEMPTS.
+        self._surplus_refresh_attempts: dict[tuple[int, int], int] = {}
+
         hass.data[const.DOMAIN][self.id]["dt_last"] = self._last_stats_dt
 
         # Just the preamble of the statistics
@@ -326,6 +332,44 @@ class EdataCoordinator(DataUpdateCoordinator):
         # Run the update in a worker and wait for completion before continuing.
         # e-data's async wrapper can return before the underlying update is done.
         # _must_dump=False: we handle the dump ourselves after enrichment.
+
+        # Auto-refresh months that have consumption records but zero surplus.
+        # The distributor may publish surplus (and corrected net consumption)
+        # days or weeks after the initial upload, but python-edata's merge
+        # logic keeps existing in-memory records unchanged even when Datadis
+        # returns updated values for the same datetimes.  To pick up corrected
+        # data automatically:
+        #   1. Detect months with 0 surplus older than SURPLUS_STALE_DAYS.
+        #   2. Purge those months from memory so python-edata has no cached
+        #      records to "skip" during merge.
+        #   3. Clear the Datadis connector disk cache so the connector hits the
+        #      API instead of returning a stale 24 h cached response.
+        #   4. Let update() run normally — fresh Datadis data is processed.
+        # Safety net: _pre_update_snapshot still contains the old records, so
+        # the orphan-merge below restores them if Datadis is unavailable.
+        _stale_surplus_months: list[tuple[int, int]] = []
+        if _pre_update_snapshot:
+            _stale_surplus_months = self._find_stale_zero_surplus_months(date_from)
+            if _stale_surplus_months:
+                _LOGGER.info(
+                    "%s: surplus auto-refresh: found %d month(s) with stale zero surplus: %s",
+                    self.scups,
+                    len(_stale_surplus_months),
+                    [f"{y:04d}-{m:02d}" for y, m in _stale_surplus_months],
+                )
+                for _yr, _mo in _stale_surplus_months:
+                    self._purge_month_from_memory(_yr, _mo)
+                    self._surplus_refresh_attempts[(_yr, _mo)] = (
+                        self._surplus_refresh_attempts.get((_yr, _mo), 0) + 1
+                    )
+                # Clear disk cache so the connector fetches from Datadis API.
+                self._force_clear_datadis_cache()
+                self._force_reset_fetch_rate_limits()
+                _LOGGER.info(
+                    "%s: surplus auto-refresh: purged %d month(s), cleared disk cache",
+                    self.scups,
+                    len(_stale_surplus_months),
+                )
         self._edata._must_dump = False
         update_result = False
         update_exc: Exception | None = None
@@ -447,6 +491,40 @@ class EdataCoordinator(DataUpdateCoordinator):
                     "%s: update: after window-orphan merge consumptions=%d",
                     self.scups, len(_merged),
                 )
+
+        # Post-refresh tracking: check which surplus-auto-refresh months now have data.
+        if _stale_surplus_months:
+            _post_months_surplus: dict[tuple[int, int], int] = {}
+            for c in self._edata.data.get("consumptions", []):
+                dt = c.get("datetime")
+                if dt is None:
+                    continue
+                key = (dt.year, dt.month)
+                if key in set(_stale_surplus_months) and (c.get("surplus_kWh") or 0) > 0:
+                    _post_months_surplus[key] = _post_months_surplus.get(key, 0) + 1
+            _resolved = [k for k in _stale_surplus_months if k in _post_months_surplus]
+            _still_missing = [k for k in _stale_surplus_months if k not in _post_months_surplus]
+            for k in _resolved:
+                self._surplus_refresh_done.add(k)
+                _LOGGER.info(
+                    "%s: surplus auto-refresh: resolved %04d-%02d (%d surplus records)",
+                    self.scups, k[0], k[1], _post_months_surplus[k],
+                )
+            for k in _still_missing:
+                attempts = self._surplus_refresh_attempts.get(k, 0)
+                if attempts >= self._MAX_SURPLUS_REFRESH_ATTEMPTS:
+                    self._surplus_refresh_done.add(k)
+                    _LOGGER.info(
+                        "%s: surplus auto-refresh: giving up on %04d-%02d after %d attempts"
+                        " — Datadis has no surplus data for this month",
+                        self.scups, k[0], k[1], attempts,
+                    )
+                else:
+                    _LOGGER.info(
+                        "%s: surplus auto-refresh: %04d-%02d still zero surplus"
+                        " (attempt %d/%d, will retry next cycle)",
+                        self.scups, k[0], k[1], attempts, self._MAX_SURPLUS_REFRESH_ATTEMPTS,
+                    )
 
         if post_counts["consumptions"] > 0:
             # 1. Dump clean data first — edata's EdataSchema (voluptuous) uses
@@ -1961,6 +2039,99 @@ class EdataCoordinator(DataUpdateCoordinator):
         for stat_id in stat_ids:
             self._last_stats_dt.pop(stat_id, None)
             self._last_stats_sum.pop(stat_id, None)
+
+    # Number of consecutive failed surplus-refresh attempts before giving up on a month.
+    _MAX_SURPLUS_REFRESH_ATTEMPTS = 5
+
+    def _find_stale_zero_surplus_months(
+        self, date_from: datetime
+    ) -> list[tuple[int, int]]:
+        """Return (year, month) pairs inside the cache window that have consumption
+        data with zero surplus AND records old enough to potentially have been
+        corrected by the distributor.
+
+        The distributor may publish surplus data days or weeks after the initial
+        consumption upload.  Any month that:
+          - has at least one consumption record older than SURPLUS_STALE_DAYS
+          - has zero surplus across ALL its records
+          - has not already been resolved or exhausted retries
+        is eligible for a forced re-fetch so we can pick up corrected data.
+
+        We only act when the installation has shown surplus at some point (to
+        avoid unnecessary Datadis calls for users without solar panels).
+        """
+
+        _SURPLUS_STALE_DAYS = 3  # records older than this are candidates
+
+        consumptions = self._edata.data.get("consumptions", [])
+
+        # If the installation has never shown any surplus, skip entirely.
+        total_surplus = sum((c.get("surplus_kWh") or 0) for c in consumptions)
+        if total_surplus == 0:
+            return []
+
+        stale_cutoff = datetime.today() - timedelta(days=_SURPLUS_STALE_DAYS)
+
+        months: dict[tuple[int, int], dict] = {}
+        for c in consumptions:
+            dt = c.get("datetime")
+            if dt is None or dt < date_from:
+                continue
+            key = (dt.year, dt.month)
+            if key not in months:
+                months[key] = {"surplus": 0, "old_records": 0}
+            if (c.get("surplus_kWh") or 0) > 0:
+                months[key]["surplus"] += 1
+            if dt < stale_cutoff:
+                months[key]["old_records"] += 1
+
+        return sorted(
+            key
+            for key, info in months.items()
+            if info["surplus"] == 0
+            and info["old_records"] > 0
+            and key not in self._surplus_refresh_done
+            and self._surplus_refresh_attempts.get(key, 0)
+            < self._MAX_SURPLUS_REFRESH_ATTEMPTS
+        )
+
+    def _purge_month_from_memory(self, year: int, month: int) -> None:
+        """Remove all in-memory records for a specific (year, month).
+
+        Purges hourly, daily and monthly aggregates so python-edata will
+        re-process fresh data from Datadis without hitting its duplicate-skip
+        logic (which keeps existing in-memory records unchanged even when
+        Datadis returns updated values for the same datetimes).
+        """
+
+        hourly_keys = ["consumptions", "cost_hourly_sum"]
+        daily_keys = ["consumptions_daily_sum", "cost_daily_sum"]
+        monthly_keys = ["consumptions_monthly_sum", "cost_monthly_sum"]
+
+        for key in hourly_keys + daily_keys + monthly_keys:
+            values = self._edata.data.get(key, [])
+            if not isinstance(values, list):
+                continue
+            before = len(values)
+            self._edata.data[key] = [
+                item
+                for item in values
+                if not (
+                    item.get("datetime") is not None
+                    and item["datetime"].year == year
+                    and item["datetime"].month == month
+                )
+            ]
+            after = len(self._edata.data[key])
+            if before != after:
+                _LOGGER.debug(
+                    "%s: surplus refresh purge key=%s %04d-%02d removed=%d",
+                    self.scups,
+                    key,
+                    year,
+                    month,
+                    before - after,
+                )
 
     async def _async_force_reimport_period(
         self, date_from: datetime, scope: str = "period", force_datadis_fetch: bool = False
