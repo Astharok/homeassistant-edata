@@ -1,6 +1,6 @@
 # Estado del fork y soporte de vertido
 
-> Última actualización: 2026-04-24 (v2 — revisión UX + corrección surplus)
+> Última actualización: 2026-05-08
 
 ## Objetivo del fork
 
@@ -39,6 +39,11 @@ panel Lovelace de dashboard energético.
 | Fix `from_now` ignorado en `ws_get_cost` | El parámetro se calculaba pero no se pasaba a `get_costs_history`; corregido |
 | Fix `_stat_id` sin asignar en `utils.py` | Tres funciones: corregido con `else: return []` |
 | **Higiene de logs** | ~20 `_LOGGER.warning()` rutinarios del ciclo de actualización y de `simulate_billing` degradados a `INFO`; `WARNING` queda para condiciones anómalas reales |
+| **Pipeline surplus auto-refresh** | Detección automática de meses con surplus_kWh=0 estancados → purga + re-fetch Datadis + decisión ACCEPT/KEEP_NEW/RESTORE/GIVE_UP por mes. Bug crítico corregido: snapshot pre-orphan-merge evita que RESTORE nunca disparara |
+| **rebuild_statistics automático al ACCEPT** | Cuando el pipeline acepta datos de surplus, lanza `rebuild_statistics` desde el inicio del mes más antiguo aceptado → las estadísticas del recorder se corrigen en el mismo ciclo, sin intervención manual |
+| **Protección RESTORE en reimports manuales** | `_async_force_reimport_period` toma snapshot por mes antes de purgar; restaura meses donde Datadis devuelve menos registros; re-vuelca a disco tras restaurar para proteger también el backup rotativo |
+| **Botón `force_surplus_reimport` corregido** | Ahora carga el backup más reciente (sin llamar a Datadis) para evitar pérdida de datos ante respuestas parciales de la API. Solo llama a Datadis si no hay backup disponible |
+| **Refinar Datos con desempate por surplus** | `_refine_data_sync` usa `(count, surplus_count)` como clave de selección; cuando dos fuentes tienen el mismo número de registros, gana la que tiene más registros con surplus > 0 |
 
 ### ⚠️ Huecos abiertos restantes
 

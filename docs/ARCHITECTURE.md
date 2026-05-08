@@ -47,7 +47,7 @@ La integración sigue un patrón clásico de Home Assistant basado en:
 | `coordinator.py` | Núcleo de negocio | Descarga datos, migra storage, recalcula estadísticas, gestiona integridad y actualizaciones. |
 | `entity.py` | Abstracciones de entidad | Define `DeviceInfo`, `unique_id` y acceso coordinado a datos. |
 | `sensor.py` | Sensores expuestos | Declara sensores de info, energía, potencia y coste. |
-| `button.py` | Acciones manuales | Expone reset suave e importación total. |
+| `button.py` | Acciones manuales | Expone 5 botones: reset suave, importación total, reimport surplus, refinar datos y diagnóstico. |
 | `utils.py` | Utilidades transversales | Validación CUPS, recursos Lovelace, acceso a estadísticas y agregaciones. |
 | `websockets.py` | API de lectura | Expone histórico agregado de consumo, excedente, costes, maxímetro y resumen. |
 | `migrate.py` | Compatibilidad histórica | Migra almacenamiento pre-2024 al nuevo esquema de ficheros. |
@@ -88,3 +88,17 @@ La tarjeta `edata-card.js` no requiere que el usuario registre manualmente el re
 - `coordinator.py` concentra demasiada responsabilidad y conviene tratarlo como superficie delicada.
 - Hay lógica de excedentes en varias capas y no toda parece simétrica entre P1, P2 y P3.
 - La presencia de `services.yaml` sin registro explícito sugiere funcionalidad incompleta o arrastrada de versiones anteriores.
+
+## Botones de acción manual
+
+| Botón (key) | Función coordinador | Comportamiento | Cuándo usarlo |
+|---|---|---|---|
+| `soft_reset` | `async_soft_reset` | Borra estado en memoria (`soft_wipe`), re-fetcha datos completos desde Datadis y reconstruye estadísticas si son corruptas. | El sensor muestra "unavailable" o los datos están claramente mal. |
+| `import_all_data` | `async_full_import` | Descarga 23 meses de Datadis (ventana larga), fusiona con la ventana corta y reconstruye estadísticas si son corruptas. NO sobreescribe registros existentes por el mismo timestamp (comportamiento de merge de python-edata). | Primera instalación o ampliación de histórico. |
+| `force_surplus_reimport` | `async_force_surplus_reimport` | Carga el backup rotativo más reciente (sin llamar a Datadis) y reconstruye todas las estadísticas del período desde ese backup. Solo llama a Datadis si no hay backup disponible, con protección RESTORE por mes. | La edata-card ya muestra vertido correcto pero la pestaña Energía de HA sigue con ceros. |
+| `refine_data` | `async_refine_data` | Lee todos los ficheros locales (storage principal, backups, caché Datadis), elige la mejor fuente por mes (criterio: más registros; desempate: más registros con surplus > 0) y reconstruye estadísticas. | Datos fragmentados o incompletos tras errores de importación. |
+| `dump_diagnostics` | `async_dump_diagnostics` | Vuelca en el log un informe completo de todos los ficheros locales. | Depuración de estado de ficheros. |
+
+### Invariante de seguridad de datos en los botones
+
+`force_surplus_reimport` y el path de Datadis de `_async_force_reimport_period` incluyen protección **RESTORE por mes**: antes de purgar datos en memoria se toma un snapshot por `(año, mes)`; tras el fetch, cualquier mes donde Datadis devuelva menos registros que el snapshot se restaura automáticamente desde ese snapshot. Si hubo restauraciones, se re-vuelca a disco y se re-rota el backup para que el estado en disco coincida con la memoria.

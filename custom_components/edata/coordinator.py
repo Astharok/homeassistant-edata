@@ -2268,6 +2268,24 @@ class EdataCoordinator(DataUpdateCoordinator):
         )
         await self._notify_force_reimport_warning(scope, date_from)
 
+        # Pre-fetch per-month snapshot for the RESTORE safety check below.
+        # Taken BEFORE _prepare() purges data so we can restore months where
+        # Datadis returns fewer records than we currently have (partial response).
+        _per_month_snapshot: dict[tuple[int, int], list[dict]] = {}
+        if force_datadis_fetch:
+            for _c in self._edata.data.get("consumptions", []):
+                _dt = _c.get("datetime")
+                if _dt is not None and _dt >= date_from:
+                    _mk = (_dt.year, _dt.month)
+                    _per_month_snapshot.setdefault(_mk, []).append(dict(_c))
+            if _per_month_snapshot:
+                _LOGGER.warning(
+                    "%s: force reimport: pre-fetch snapshot covers %d month(s) (%d records)",
+                    self.scups,
+                    len(_per_month_snapshot),
+                    sum(len(v) for v in _per_month_snapshot.values()),
+                )
+
         def _prepare() -> bool:
             if not force_datadis_fetch:
                 # Try to load the most recent rolling backup (backups/ dir).
@@ -2348,13 +2366,62 @@ class EdataCoordinator(DataUpdateCoordinator):
                     _last_c.get("surplus_kWh"),
                 )
 
+            # Per-month RESTORE safety: if Datadis returned fewer records than
+            # we had for any month in the period, restore that month from the
+            # pre-fetch snapshot to prevent data loss from partial API responses.
+            if _per_month_snapshot:
+                _restored_months: list[tuple[int, int]] = []
+                for _rmk, _bk_recs in _per_month_snapshot.items():
+                    _new_recs_for_month = [
+                        c for c in self._edata.data.get("consumptions", [])
+                        if c.get("datetime") is not None
+                        and c["datetime"].year == _rmk[0]
+                        and c["datetime"].month == _rmk[1]
+                    ]
+                    if len(_new_recs_for_month) < len(_bk_recs):
+                        _LOGGER.warning(
+                            "%s: force reimport: RESTORE %04d-%02d "
+                            "(Datadis=%d records, had=%d) — reverting to pre-operation data",
+                            self.scups, _rmk[0], _rmk[1],
+                            len(_new_recs_for_month), len(_bk_recs),
+                        )
+                        _other = [
+                            c for c in self._edata.data.get("consumptions", [])
+                            if not (
+                                c.get("datetime") is not None
+                                and c["datetime"].year == _rmk[0]
+                                and c["datetime"].month == _rmk[1]
+                            )
+                        ]
+                        self._edata.data["consumptions"] = sorted(
+                            _other + _bk_recs,
+                            key=lambda c: c.get("datetime") or datetime.min,
+                        )
+                        _restored_months.append(_rmk)
+                if _restored_months:
+                    _LOGGER.warning(
+                        "%s: force reimport: re-dumping after restoring %d month(s): %s",
+                        self.scups,
+                        len(_restored_months),
+                        [f"{y:04d}-{m:02d}" for y, m in sorted(_restored_months)],
+                    )
+                    _redump = self._edata.data.get("consumptions", [])
+                    with _clean_consumptions(_redump):
+                        await self.hass.async_add_executor_job(
+                            edata_dump_storage,
+                            self._edata._cups,
+                            self._edata.data,
+                            self._edata._storage_dir,
+                        )
+                    await self.hass.async_add_executor_job(self._rotate_storage_backup)
+                    new_rows = len(self._edata.data.get("consumptions", []))
+
             if new_rows == 0:
                 _LOGGER.warning(
                     "%s: force reimport fetched zero consumptions — Datadis may be throttling; retry later",
                     self.scups,
                 )
-            # Rotation is triggered automatically inside _async_update_data
-            # when consumptions > 0, so no explicit save needed here.
+            # Rotation triggered by _async_update_data (or re-dump above if restored).
 
         # process_data(False) recalculates aggregates and dumps to disk.
         # Only do this when we have actual data; if consumptions is empty
@@ -2394,19 +2461,35 @@ class EdataCoordinator(DataUpdateCoordinator):
         _LOGGER.warning("%s: force reimport finished", self.scups)
 
     async def async_force_surplus_reimport(self):
-        """Force reimport all values for current cache window and overwrite stats.
+        """Rebuild statistics for the current cache period from the best local data.
 
-        Bypasses the rolling backup and clears the Datadis disk cache to ensure
-        fresh data (including corrected surplus values) is fetched from Datadis.
+        Loads the most recent rolling backup (which should contain the corrected
+        surplus values written by the automatic surplus auto-refresh pipeline) and
+        rebuilds all LTS statistics from it.
+
+        Does NOT call Datadis unless no local backup is available, making this
+        operation safe even during API throttling and avoiding partial-response
+        data loss.
+
+        When to use: after the periodic cycle has already fetched corrected surplus
+        data from Datadis (visible in the edata card) but the HA Energy dashboard
+        still shows the old zero-surplus statistics.
         """
 
         reimport_from = self._get_cached_period_start()
         _LOGGER.warning(
-            "%s: force period reimport requested (from %s)",
+            "%s: force surplus reimport requested (from %s) — loading best local backup",
             self.scups,
             reimport_from.isoformat(),
         )
-        await self._async_force_reimport_period(reimport_from, force_datadis_fetch=True)
+        # Use force_datadis_fetch=False so _prepare() tries the rolling backup
+        # first. The surplus auto-refresh pipeline already saved the corrected
+        # data; this button just needs to rebuild statistics from that saved state.
+        # Only falls back to a Datadis fetch (with per-month RESTORE safety)
+        # when no local backup is available.
+        await self._async_force_reimport_period(
+            reimport_from, scope="surplus_reimport", force_datadis_fetch=False
+        )
 
     async def async_full_import(self):
         """Apply an async full fetch."""
@@ -2726,22 +2809,43 @@ class EdataCoordinator(DataUpdateCoordinator):
 
         merged_map: dict[str, dict] = {}  # dt_str → raw record
         for month in all_months:
+            # Primary sort key: record count. Tiebreaker: surplus record count.
+            # When two sources have the same number of records, prefer the one
+            # with more non-zero surplus entries (e.g. the backup saved after
+            # Datadis published corrected surplus values beats an older backup
+            # with identical record count but all-zero surplus).
             best_label = max(
                 all_source_labels,
-                key=lambda lbl: len(month_records[lbl].get(month, {})),
+                key=lambda lbl: (
+                    len(month_records[lbl].get(month, {})),
+                    sum(
+                        1 for r in month_records[lbl].get(month, {}).values()
+                        if (r.get("surplus_kWh") or 0) > 0
+                    ),
+                ),
             )
             best_count = len(month_records[best_label].get(month, {}))
+            best_surplus = sum(
+                1 for r in month_records[best_label].get(month, {}).values()
+                if (r.get("surplus_kWh") or 0) > 0
+            )
             cur_count = sum(
                 1 for c in self._edata.data.get("consumptions", [])
                 if str(c.get("datetime", ""))[:7] == month
+            )
+            cur_surplus = sum(
+                1 for c in self._edata.data.get("consumptions", [])
+                if str(c.get("datetime", ""))[:7] == month and (c.get("surplus_kWh") or 0) > 0
             )
             is_cache_win = best_label.startswith("cache:")
             flag = ""
             if best_count > cur_count:
                 flag = f"  <<< IMPROVED{' (from cache)' if is_cache_win else ''}"
+            elif best_surplus > cur_surplus:
+                flag = "  <<< BETTER SURPLUS"
             _LOGGER.warning(
-                "%s: [REFINE]   %s → best=%s (%dh) current=%dh%s",
-                self.scups, month, best_label, best_count, cur_count, flag,
+                "%s: [REFINE]   %s → best=%s (%dh surplus=%d) current=%dh surplus=%d%s",
+                self.scups, month, best_label, best_count, best_surplus, cur_count, cur_surplus, flag,
             )
             merged_map.update(month_records[best_label].get(month, {}))
 

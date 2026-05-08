@@ -1,6 +1,6 @@
 # Mapa de documentación
 
-> Última actualización: 2026-04-24
+> Última actualización: 2026-05-08
 
 Este documento es el índice operativo de la documentación del proyecto. Su función
 es permitir una consulta selectiva y rápida: antes de leer documentación, localiza

@@ -157,9 +157,57 @@ con `group_by_year()`.
 - `check_statistics_integrity`: compara suma de estadísticas con suma de datos fuente.
 - `rebuild_statistics`: borra y reconstruye desde un `from_dt` dado.
 - `_async_force_reimport_period`: reimportación de un rango completo, usando snapshot
-  local si existe o rellamando a Datadis.
+  local si existe o rellamando a Datadis con protección RESTORE por mes (ver abajo).
 
 Todos estos métodos usan `_clean_consumptions()` antes de llamar a la librería.
+
+## Pipeline de surplus auto-refresh
+
+El coordinador detecta automáticamente meses con datos de consumo pero `surplus_kWh=0`
+que podrían haberse corregido posteriormente en Datadis (las distribuidoras tardan
+días o semanas en publicar el vertido definitivo).
+
+### Condiciones de activación (método `_find_stale_zero_surplus_months`)
+
+Un mes se incluye en el pipeline si:
+- Tiene al menos un registro con `surplus_kWh > 0` en CUALQUIER mes (prueba de instalación solar).
+- El mes candidato tiene todos sus registros con `surplus_kWh == 0`.
+- Al menos un registro del mes tiene más de `_SURPLUS_STALE_DAYS` (3) días de antigüedad.
+- No está ya marcado como resuelto (`_surplus_refresh_done`).
+- No ha agotado los reintentos (`_MAX_SURPLUS_REFRESH_ATTEMPTS = 5`).
+
+### Flujo de ejecución (dentro de `_async_update_data`)
+
+1. Se detectan los meses candidatos.
+2. Por cada mes candidato: se hace backup en memoria (`_month_backups`) y se purga de la memoria con `_purge_month_from_memory`.
+3. Se limpia la caché de disco de Datadis (`_force_clear_datadis_cache`) y se resetean los rate limits.
+4. Se ejecuta `self._edata.update()` normalmente — Datadis devuelve datos frescos sin el caché de 24h.
+5. Se toma un snapshot de lo que Datadis devolvió POR MES, **antes** del orphan-merge.
+6. Se ejecuta el orphan-merge (re-inserta registros pre-`date_from` del snapshot anterior).
+7. Se evalúa la decisión por mes usando el snapshot pre-orphan-merge:
+   - **ACCEPT** (`new_surplus > 0`): surplus llegó. Se añade a `_surplus_refresh_done` y se dispara `rebuild_statistics` desde el inicio del mes más antiguo aceptado → las estadísticas del recorder se actualizan automáticamente.
+   - **KEEP NEW** (`new_count >= old_count AND new_surplus == 0`): datos completos, surplus aún no publicado. Se acepta y se reintentará en el próximo ciclo.
+   - **RESTORE** (`new_count < old_count OR update_exc`): Datadis devolvió datos parciales o falló. Se restaura el backup en memoria para ese mes. Se decrementa el contador de intentos.
+   - **GIVE UP** (`attempts >= MAX AND surplus == 0`): se marca como resuelto, se deja de intentar.
+
+### Invariante crítica: snapshot antes de orphan-merge
+
+El snapshot de lo que Datadis devolvió se toma **después de `update()`** pero **antes del orphan-merge**. Esto es esencial: el orphan-merge re-inserta registros purgados del snapshot anterior, lo que inflaría los conteos y haría que RESTORE nunca disparara aunque Datadis devolviera 0 registros para ese mes.
+
+### Relación con los botones
+
+- El botón `force_surplus_reimport` NO hace fetch a Datadis por defecto. Carga el backup más reciente (que fue guardado por el pipeline cuando hizo ACCEPT) y reconstruye estadísticas.
+- La reconstrucción automática de estadísticas en el ACCEPT del pipeline evita que el usuario tenga que pulsar ningún botón — las estadísticas del recorder se corrigen en el mismo ciclo periódico.
+
+## Protección RESTORE en reimports manuales
+
+`_async_force_reimport_period` con `force_datadis_fetch=True` incluye protección por mes:
+
+1. Antes de purgar, se toma un snapshot por `(año, mes)` de los registros ≥ `date_from`.
+2. Tras el fetch de Datadis, por cada mes: si `new_count < old_count` → RESTORE desde snapshot.
+3. Si hubo restauraciones: se re-vuelca a disco con `edata_dump_storage` y se re-rota el backup, de modo que el backup diario en disco también refleja el estado restaurado (no el datos parcial de Datadis).
+
+Esto previene la pérdida de datos ante respuestas parciales o truncadas de la API de Datadis.
 
 ## Context manager `_clean_consumptions`
 
