@@ -7,6 +7,7 @@ mocks; everything else can be a MagicMock sentinel.
 
 from __future__ import annotations
 
+import os as _os
 import sys
 import types
 from unittest.mock import MagicMock
@@ -118,8 +119,6 @@ _edata_proc_utils = _make_module(
 # ------------------------------------------------------------------
 # custom_components.edata sub-modules used transitively
 # ------------------------------------------------------------------
-
-import os as _os
 
 _cc = _make_module("custom_components")
 _cc.__path__ = []

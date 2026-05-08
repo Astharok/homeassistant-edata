@@ -497,12 +497,16 @@ class EdataCoordinator(DataUpdateCoordinator):
         #   new_count < old_count        → RESTORE  (Datadis returned fewer records;
         #                                  revert to avoid data loss)
         #   update_exc is not None       → RESTORE  (API failure, always revert)
+        # Initialised here so both 'if _month_backups:' blocks can reference it
+        # without a potential use-before-assign (both blocks are identically gated,
+        # but an explicit initialisation documents the intent).
+        _datadis_month_recs: dict[tuple[int, int], list] = {}
         if _month_backups:
             # Snapshot what Datadis actually returned for each candidate month.
             # Must be done HERE, after update() but BEFORE orphan-merge, so that
             # the decision reflects true Datadis output (orphan-merge may re-inject
             # old records from _pre_update_snapshot, masking a RESTORE condition).
-            _datadis_month_recs: dict[tuple[int, int], list] = {
+            _datadis_month_recs = {
                 _mk: [
                     _c for _c in self._edata.data.get("consumptions", [])
                     if _c.get("datetime") is not None
@@ -520,24 +524,24 @@ class EdataCoordinator(DataUpdateCoordinator):
         # NOTE: this runs AFTER the Datadis snapshot for surplus-refresh months
         # is taken, so the snapshot reflects true Datadis output.
         if update_exc is None and post_counts["consumptions"] > 0 and _pre_update_snapshot:
-            _post_datetimes2 = {
+            _post_datetimes = {
                 c.get("datetime") for c in self._edata.data.get("consumptions", [])
             }
-            _orphans2 = [
+            _orphans = [
                 c for c in _pre_update_snapshot
-                if c.get("datetime") not in _post_datetimes2
+                if c.get("datetime") not in _post_datetimes
             ]
-            if _orphans2:
+            if _orphans:
                 _LOGGER.info(
-                    "%s: update: re-merging %d surplus-refresh orphan(s) from snapshot",
-                    self.scups, len(_orphans2),
+                    "%s: update: re-merging %d pre-date-from orphan(s) from snapshot",
+                    self.scups, len(_orphans),
                 )
-                _merged2 = sorted(
-                    list(self._edata.data.get("consumptions", [])) + _orphans2,
+                _merged = sorted(
+                    list(self._edata.data.get("consumptions", [])) + _orphans,
                     key=lambda c: c.get("datetime") or datetime.min,
                 )
-                self._edata.data["consumptions"] = _merged2
-                post_counts["consumptions"] = len(_merged2)
+                self._edata.data["consumptions"] = _merged
+                post_counts["consumptions"] = len(_merged)
 
         if _month_backups:
             for _mk in list(_stale_surplus_months):
