@@ -486,59 +486,67 @@ class EdataCoordinator(DataUpdateCoordinator):
                 )
             self._datadis_failure_count = 0
 
+        # Post-refresh decision: for each purged month decide whether to ACCEPT
+        # NOTE: _datadis_month_recs is snapshotted BEFORE orphan-merge so that the
+        # decision is based on what Datadis actually returned, not on records that
+        # orphan-merge may have re-injected from the pre-update snapshot.
+        #
+        #   new_surplus > 0              → ACCEPT  (surplus arrived, mark resolved)
+        #   new_count >= old_count       → KEEP NEW (data complete, surplus not yet
+        #     AND new_surplus == 0         available — retry next cycle)
+        #   new_count < old_count        → RESTORE  (Datadis returned fewer records;
+        #                                  revert to avoid data loss)
+        #   update_exc is not None       → RESTORE  (API failure, always revert)
+        if _month_backups:
+            # Snapshot what Datadis actually returned for each candidate month.
+            # Must be done HERE, after update() but BEFORE orphan-merge, so that
+            # the decision reflects true Datadis output (orphan-merge may re-inject
+            # old records from _pre_update_snapshot, masking a RESTORE condition).
+            _datadis_month_recs: dict[tuple[int, int], list] = {
+                _mk: [
+                    _c for _c in self._edata.data.get("consumptions", [])
+                    if _c.get("datetime") is not None
+                    and _c["datetime"].year == _mk[0]
+                    and _c["datetime"].month == _mk[1]
+                ]
+                for _mk in _stale_surplus_months
+            }
+
         # Re-merge records that the edata library dropped because they predate
         # date_from. Fires whenever the update completed without exception and
         # returned consumptions — update_result is None (not False) when the
         # API had no new data but the local cache was still applied, so we must
         # not gate on its truthiness.
+        # NOTE: this runs AFTER the Datadis snapshot for surplus-refresh months
+        # is taken, so the snapshot reflects true Datadis output.
         if update_exc is None and post_counts["consumptions"] > 0 and _pre_update_snapshot:
-            _post_datetimes = {
+            _post_datetimes2 = {
                 c.get("datetime") for c in self._edata.data.get("consumptions", [])
             }
-            _orphans = [
+            _orphans2 = [
                 c for c in _pre_update_snapshot
-                if c.get("datetime") not in _post_datetimes
+                if c.get("datetime") not in _post_datetimes2
             ]
-            if _orphans:
+            if _orphans2:
                 _LOGGER.info(
-                    "%s: update: re-merging %d record(s) outside window (%s .. %s)",
-                    self.scups, len(_orphans),
-                    _orphans[0].get("datetime"),
-                    _orphans[-1].get("datetime"),
+                    "%s: update: re-merging %d surplus-refresh orphan(s) from snapshot",
+                    self.scups, len(_orphans2),
                 )
-                _merged = sorted(
-                    list(self._edata.data.get("consumptions", [])) + _orphans,
+                _merged2 = sorted(
+                    list(self._edata.data.get("consumptions", [])) + _orphans2,
                     key=lambda c: c.get("datetime") or datetime.min,
                 )
-                self._edata.data["consumptions"] = _merged
-                post_counts["consumptions"] = len(_merged)
-                _LOGGER.info(
-                    "%s: update: after window-orphan merge consumptions=%d",
-                    self.scups, len(_merged),
-                )
+                self._edata.data["consumptions"] = _merged2
+                post_counts["consumptions"] = len(_merged2)
 
-        # Post-refresh decision: for each purged month decide whether to ACCEPT
-        # the new Datadis data, KEEP it as-is (still 0 surplus but complete), or
-        # RESTORE the backup (data regressed or Datadis unavailable).
-        #
-        #   new_surplus > 0              → ACCEPT  (surplus arrived, mark resolved)
-        #   new_count >= old_count       → KEEP NEW (data complete, surplus not yet
-        #     AND new_surplus == 0         available — retry next cycle)
-        #   new_count < old_count        → RESTORE  (Datadis returned less data than
-        #     OR new_count == 0            we had; revert to avoid data loss)
-        #   update_exc is not None       → RESTORE  (API failure, always revert)
         if _month_backups:
             for _mk in list(_stale_surplus_months):
                 _myr, _mmo = _mk
                 _backup = _month_backups.get(_mk, {})
                 _old_count = len(_backup.get("consumptions", []))
 
-                _new_recs = [
-                    _c for _c in self._edata.data.get("consumptions", [])
-                    if _c.get("datetime") is not None
-                    and _c["datetime"].year == _myr
-                    and _c["datetime"].month == _mmo
-                ]
+                # Use Datadis snapshot (pre-orphan-merge) for the decision.
+                _new_recs = _datadis_month_recs.get(_mk, [])
                 _new_surplus = sum((_c.get("surplus_kWh") or 0) for _c in _new_recs)
                 _new_count = len(_new_recs)
 
@@ -553,7 +561,7 @@ class EdataCoordinator(DataUpdateCoordinator):
                         " surplus_records=%d new_count=%d old_count=%d",
                         self.scups, _myr, _mmo, _surplus_recs, _new_count, _old_count,
                     )
-                elif update_exc is not None or (_new_count == 0 and _old_count > 0) or _new_count < _old_count:
+                elif update_exc is not None or _new_count < _old_count:
                     # RESTORE — Datadis failed, returned nothing, or fewer records
                     _LOGGER.warning(
                         "%s: surplus auto-refresh: RESTORE %04d-%02d"
@@ -2110,6 +2118,8 @@ class EdataCoordinator(DataUpdateCoordinator):
 
     # Number of consecutive failed surplus-refresh attempts before giving up on a month.
     _MAX_SURPLUS_REFRESH_ATTEMPTS = 5
+    # Minimum age (days) of records in a zero-surplus month before triggering a re-fetch.
+    _SURPLUS_STALE_DAYS = 3
 
     def _find_stale_zero_surplus_months(
         self, date_from: datetime
@@ -2129,8 +2139,6 @@ class EdataCoordinator(DataUpdateCoordinator):
         avoid unnecessary Datadis calls for users without solar panels).
         """
 
-        _SURPLUS_STALE_DAYS = 3  # records older than this are candidates
-
         consumptions = self._edata.data.get("consumptions", [])
 
         # If the installation has never shown any surplus, skip entirely.
@@ -2138,7 +2146,7 @@ class EdataCoordinator(DataUpdateCoordinator):
         if total_surplus == 0:
             return []
 
-        stale_cutoff = datetime.today() - timedelta(days=_SURPLUS_STALE_DAYS)
+        stale_cutoff = datetime.today() - timedelta(days=self._SURPLUS_STALE_DAYS)
 
         months: dict[tuple[int, int], dict] = {}
         for c in consumptions:
