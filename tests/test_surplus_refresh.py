@@ -1,10 +1,10 @@
 """Unit tests for the surplus auto-refresh logic in EdataCoordinator.
 
-Tests cover three methods:
+Tests cover:
   - _find_stale_zero_surplus_months
   - _purge_month_from_memory
-  - The ACCEPT / KEEP NEW / RESTORE decision logic (exercised via a helper
-    that mimics the post-update decision block).
+  - The ACCEPT / KEEP NEW / RESTORE decision logic
+  - _refine_data_sync early-exit surplus check
 
 The full coordinator stack (HA, Datadis API, etc.) is intentionally NOT
 instantiated.  A minimal stub exposes only the attributes the tested methods
@@ -500,3 +500,99 @@ class TestAcceptedMonthsTracking:
         # rebuild_from would be the earliest: April
         rebuild_from = datetime(min(accepted_months)[0], min(accepted_months)[1], 1)
         assert rebuild_from == datetime(2026, 4, 1)
+
+
+# ---------------------------------------------------------------------------
+# _refine_data_sync early-exit: surplus improvement must NOT be blocked
+# ---------------------------------------------------------------------------
+
+def _make_refine_result(
+    current_consumptions: list[dict],
+    merged_consumptions: list[dict],
+) -> bool:
+    """Mimic the _refine_data_sync early-exit logic and return whether it proceeds.
+
+    Returns True when the fix allows the merge to proceed (surplus improved),
+    False when the early-exit correctly blocks unchanged data.
+    """
+    current_count = len(current_consumptions)
+    merged = merged_consumptions
+
+    if len(merged) == current_count:
+        cur_months = {str(c.get("datetime", ""))[:7] for c in current_consumptions}
+        new_months = {str(c.get("datetime", ""))[:7] for c in merged}
+        if cur_months == new_months:
+            _cur_surplus = sum(
+                1 for c in current_consumptions if (c.get("surplus_kWh") or 0) > 0
+            )
+            _new_surplus = sum(
+                1 for c in merged if (c.get("surplus_kWh") or 0) > 0
+            )
+            if _cur_surplus >= _new_surplus:
+                return False  # genuinely no improvement
+            # surplus improved → proceed
+            return True
+
+    return True  # count differs → always proceed
+
+
+def _april_recs(surplus: float = 0.0, n: int = 720) -> list[dict]:
+    return [
+        {
+            "datetime": f"2026-04-{(i // 24) + 1:02d}T{i % 24:02d}:00:00",
+            "surplus_kWh": surplus,
+        }
+        for i in range(n)
+    ]
+
+
+class TestRefineEarlyExitSurplusCheck:
+    """Verify that _refine_data_sync does not block surplus improvements."""
+
+    def test_same_count_same_surplus_is_blocked(self):
+        """When counts AND surplus are equal, no merge should happen."""
+        current = _april_recs(surplus=0.0, n=720)
+        merged = _april_recs(surplus=0.0, n=720)
+        assert _make_refine_result(current, merged) is False
+
+    def test_same_count_with_surplus_improvement_proceeds(self):
+        """When counts are equal but surplus improves, merge MUST proceed."""
+        current = _april_recs(surplus=0.0, n=720)  # all-zero surplus
+        merged = _april_recs(surplus=1.5, n=720)   # same records, with surplus
+        assert _make_refine_result(current, merged) is True
+
+    def test_different_count_always_proceeds(self):
+        """When merged has more records, early-exit is never triggered."""
+        current = _april_recs(surplus=0.0, n=700)
+        merged = _april_recs(surplus=0.0, n=720)
+        assert _make_refine_result(current, merged) is True
+
+    def test_partial_surplus_improvement_proceeds(self):
+        """If only some records gain surplus (count equal), merge proceeds."""
+        current = [
+            {"datetime": f"2026-04-01T{h:02d}:00:00", "surplus_kWh": 0.0}
+            for h in range(24)
+        ]
+        merged = [
+            {"datetime": f"2026-04-01T{h:02d}:00:00", "surplus_kWh": 1.5 if h < 6 else 0.0}
+            for h in range(24)
+        ]
+        assert _make_refine_result(current, merged) is True
+
+    def test_regression_april_zero_surplus_scenario(self):
+        """Regression: exact scenario that caused unrecoverable zero surplus.
+
+        Before the fix, a backup with the same record count as the current data
+        but with non-zero surplus would be silently skipped, leaving April at
+        surplus_kWh=0 forever even though an older backup had the correct values.
+        """
+        # Current state: 595 records for April, all with surplus=0
+        current = _april_recs(surplus=0.0, n=595)
+        # Older backup: same 595 records but with correct surplus values
+        from_backup = _april_recs(surplus=1.8, n=595)
+        result = _make_refine_result(current, from_backup)
+        assert result is True, (
+            "Backup with better surplus must NOT be blocked by the early-exit check "
+            "when record counts are equal — this was the root cause of unrecoverable "
+            "zero surplus for April 2026."
+        )

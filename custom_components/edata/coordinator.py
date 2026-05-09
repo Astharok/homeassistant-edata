@@ -2461,35 +2461,42 @@ class EdataCoordinator(DataUpdateCoordinator):
         _LOGGER.warning("%s: force reimport finished", self.scups)
 
     async def async_force_surplus_reimport(self):
-        """Rebuild statistics for the current cache period from the best local data.
+        """Scan ALL local backup files, apply the best surplus data per month, rebuild stats.
 
-        Loads the most recent rolling backup (which should contain the corrected
-        surplus values written by the automatic surplus auto-refresh pipeline) and
-        rebuilds all LTS statistics from it.
+        Unlike the periodic pipeline (which only fetches fresh data from Datadis),
+        this button searches every available backup file in the backups/ directory
+        and picks the one with the most and best surplus data for each calendar
+        month.  This is the correct recovery path when:
 
-        Does NOT call Datadis unless no local backup is available, making this
-        operation safe even during API throttling and avoiding partial-response
-        data loss.
+        - The most recent backup has lost surplus data (e.g. corrupted by a
+          partial Datadis response) but an older backup still has the correct
+          surplus values.
+        - The HA Energy dashboard shows zero surplus for months that the edata
+          card shows correctly.
 
-        When to use: after the periodic cycle has already fetched corrected surplus
-        data from Datadis (visible in the edata card) but the HA Energy dashboard
-        still shows the old zero-surplus statistics.
+        Does NOT call Datadis — safe regardless of API availability or throttling.
         """
 
-        reimport_from = self._get_cached_period_start()
         _LOGGER.warning(
-            "%s: force surplus reimport requested (from %s) — loading best local backup",
+            "%s: force surplus reimport — scanning ALL local backups for best surplus data",
             self.scups,
-            reimport_from.isoformat(),
         )
-        # Use force_datadis_fetch=False so _prepare() tries the rolling backup
-        # first. The surplus auto-refresh pipeline already saved the corrected
-        # data; this button just needs to rebuild statistics from that saved state.
-        # Only falls back to a Datadis fetch (with per-month RESTORE safety)
-        # when no local backup is available.
-        await self._async_force_reimport_period(
-            reimport_from, scope="surplus_reimport", force_datadis_fetch=False
-        )
+        changed = await self.hass.async_add_executor_job(self._refine_data_sync)
+        if changed:
+            _consumptions = self._edata.data.get("consumptions", [])
+            with _clean_consumptions(_consumptions):
+                await asyncio.to_thread(self._edata.process_data)
+            await self.rebuild_statistics()
+            _LOGGER.warning(
+                "%s: force surplus reimport complete — statistics rebuilt from best local data",
+                self.scups,
+            )
+        else:
+            _LOGGER.warning(
+                "%s: force surplus reimport — no improvement found in local backups; "
+                "the best available local data is already loaded",
+                self.scups,
+            )
 
     async def async_full_import(self):
         """Apply an async full fetch."""
@@ -2877,11 +2884,27 @@ class EdataCoordinator(DataUpdateCoordinator):
             }
             new_months = {str(c.get("datetime", ""))[:7] for c in merged}
             if cur_months == new_months:
-                _LOGGER.warning(
-                    "%s: [REFINE] no improvement found (merged=%d = current=%d, same months)",
-                    self.scups, len(merged), current_count,
+                # Check if surplus improved even when record counts are equal.
+                # An older backup may have the same number of hourly records but
+                # with non-zero surplus_kWh that a newer (corrupted) backup lost.
+                _cur_surplus = sum(
+                    1 for c in self._edata.data.get("consumptions", [])
+                    if (c.get("surplus_kWh") or 0) > 0
                 )
-                return False
+                _new_surplus = sum(
+                    1 for c in merged if (c.get("surplus_kWh") or 0) > 0
+                )
+                if _cur_surplus >= _new_surplus:
+                    _LOGGER.warning(
+                        "%s: [REFINE] no improvement found "
+                        "(merged=%d = current=%d, same months, surplus unchanged %d)",
+                        self.scups, len(merged), current_count, _cur_surplus,
+                    )
+                    return False
+                _LOGGER.warning(
+                    "%s: [REFINE] surplus improved: %d → %d records with surplus > 0",
+                    self.scups, _cur_surplus, _new_surplus,
+                )
 
         _LOGGER.warning(
             "%s: [REFINE] applying merge: %d → %d consumptions (delta=%+d)",
